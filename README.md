@@ -82,8 +82,7 @@ The learning-rate schedule depends on `--max_steps`, so changing it changes the 
 - [x] `model.py` tested: 19.4M parameters, untrained loss about ln(vocab)
 - [x] `train.py` with checkpointing and resume, tested on CPU and on a Colab T4 (resume confirmed after a real disconnect)
 - [x] Progress slides drafted (kept outside the public repo)
-- [ ] Baseline run, 20,000 steps. Final validation perplexity: **`<fill in from log.csv>`**. Checkpoint: `tensorix/checkpoints/baseline/best.pt`
-
+- [x] Baseline run, 20,000 steps. Final validation perplexity: **4.45** (validation loss 1.493, training loss 1.501). Checkpoint: `tensorix/checkpoints/baseline/best.pt`
 ## Before you start (one-time, everyone)
 
 1. Accept the GitHub collaborator invite and the Google Drive invite.
