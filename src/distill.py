@@ -136,3 +136,56 @@ class TeacherModel(nn.Module):
         student_target_probs = self.vocab_mapper.teacher_probs_to_student_probs(teacher_probs)
 
         return student_target_probs
+
+
+def distillation_loss(
+    student_logits: torch.Tensor,
+    teacher_probs: torch.Tensor,
+    targets: torch.Tensor,
+    temperature: float = 2.0,
+    alpha: float = 0.5,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Computes combined Knowledge Distillation loss:
+        L = (1 - alpha) * L_CE + alpha * (T^2) * L_KL
+
+    All probability and KL divergence math is strictly done in float32.
+
+    Args:
+        student_logits: Student output logits of shape (B, T, vocab_size)
+        teacher_probs: Teacher soft probabilities of shape (B, T, vocab_size)
+        targets: Ground truth next-token labels of shape (B, T)
+        temperature: Distillation temperature T (> 0)
+        alpha: Weight balancing CE and KD, in range [0, 1]
+
+    Returns:
+        total_loss: (1 - alpha) * L_CE + alpha * (T^2) * L_KL (scalar)
+        ce_loss: Standard cross-entropy loss (scalar, for logging)
+        kl_loss: Unscaled KL divergence D_KL(P_T || P_S) (scalar, for logging)
+    """
+    # 1. Cast logits and probabilities to float32 for numerical stability (Rule 3)
+    s_logits_f32 = student_logits.float()
+    t_probs_f32 = teacher_probs.float()
+
+    B, T, V = s_logits_f32.shape
+
+    # 2. Hard Cross-Entropy Loss against ground-truth targets
+    # Flatten (B, T, V) -> (B*T, V) and (B, T) -> (B*T,)
+    ce_loss = F.cross_entropy(s_logits_f32.view(-1, V), targets.view(-1))
+
+    # 3. Soft Distillation Loss via KL Divergence
+    # Student log-probabilities at temperature T: shape (B*T, V)
+    s_log_probs = F.log_softmax(s_logits_f32 / temperature, dim=-1).view(-1, V)
+    t_probs_flat = t_probs_f32.view(-1, V)
+
+    # PyTorch kl_div: D_KL(target || input) = sum(target * (log(target) - input))
+    # reduction="batchmean" divides by (B * T), giving true mathematical expectation
+    kl_div = F.kl_div(s_log_probs, t_probs_flat, reduction="batchmean")
+
+    # 4. Scale KL divergence by T^2 to keep gradient magnitudes consistent across temperatures
+    kd_loss = (temperature ** 2) * kl_div
+
+    # 5. Combined convex combination
+    total_loss = (1.0 - alpha) * ce_loss + alpha * kd_loss
+
+    return total_loss, ce_loss, kl_div
