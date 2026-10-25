@@ -77,3 +77,62 @@ class VocabMapper(nn.Module):
         # Concatenate along vocabulary dimension: (B, T, vocab_size)
         student_probs = torch.cat([kept_probs, unk_prob], dim=-1)
         return student_probs
+
+
+class TeacherModel(nn.Module):
+    """
+    Frozen teacher wrapper around HuggingFace's GPT-2 (124M).
+    Extracts teacher probabilities projected into the student vocabulary space.
+    """
+    def __init__(self, model_name_or_model="gpt2", vocab_mapper=None, device="cpu"):
+        super().__init__()
+        from transformers import GPT2LMHeadModel
+
+        # Allow passing a model name string or an existing model instance
+        if isinstance(model_name_or_model, str):
+            print(f"Loading teacher model '{model_name_or_model}'...")
+            self.model = GPT2LMHeadModel.from_pretrained(model_name_or_model)
+        else:
+            self.model = model_name_or_model
+
+        self.model.to(device)
+        self.model.eval()
+
+        # Freeze all teacher parameters: teacher is purely an inference oracle
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        self.vocab_mapper = vocab_mapper
+        self.device = device
+
+    @torch.no_grad()
+    def get_soft_targets(self, student_ids: torch.Tensor, temperature: float = 2.0) -> torch.Tensor:
+        """
+        Runs teacher inference on a batch of student tokens and returns
+        the temperature-scaled probability distribution over the student vocabulary.
+
+        Args:
+            student_ids: Tensor of shape (B, T) with student token IDs
+            temperature: Softmax temperature T (> 0). Higher = softer distribution.
+
+        Returns:
+            student_target_probs: Float32 tensor of shape (B, T, vocab_size) summing to 1.0
+        """
+        # 1. Translate student token IDs to GPT-2 token IDs: (B, T)
+        teacher_ids = self.vocab_mapper.to_teacher_tokens(student_ids)
+
+        # 2. Run teacher forward pass without gradients: logits shape (B, T, 50257)
+        outputs = self.model(input_ids=teacher_ids)
+        teacher_logits = outputs.logits
+
+        # 3. Always compute softmax in float32 for numerical stability (Rule 3)
+        teacher_logits = teacher_logits.float()
+
+        # 4. Softmax with temperature scaling: shape (B, T, 50257)
+        # As T increases, differences between top tokens and tail tokens soften
+        teacher_probs = F.softmax(teacher_logits / temperature, dim=-1)
+
+        # 5. Project teacher distribution down to student vocabulary: shape (B, T, vocab_size)
+        student_target_probs = self.vocab_mapper.teacher_probs_to_student_probs(teacher_probs)
+
+        return student_target_probs
