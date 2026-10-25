@@ -159,12 +159,15 @@ def distillation_loss(
     targets: torch.Tensor,
     temperature: float = 2.0,
     alpha: float = 0.5,
+    loss_chunk: int = 2048,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Computes combined Knowledge Distillation loss:
+    Computes combined Knowledge Distillation loss chunked across rows to prevent OOM:
         L = (1 - alpha) * L_CE + alpha * (T^2) * L_KL
 
-    All probability and KL divergence math is strictly done in float32.
+    Uses torch.utils.checkpoint.checkpoint(..., use_reentrant=False) per row chunk
+    so that big intermediate activation tensors (~1.4 GiB each for 16,384 x 22,875)
+    are discarded during the forward pass and recomputed one small chunk at a time.
 
     Args:
         student_logits: Student output logits of shape (B, T, vocab_size)
@@ -172,38 +175,60 @@ def distillation_loss(
         targets: Ground truth next-token labels of shape (B, T)
         temperature: Distillation temperature T (> 0)
         alpha: Weight balancing CE and KD, in range [0, 1]
+        loss_chunk: Number of sequence positions to compute at a time (default 2048)
 
     Returns:
         total_loss: (1 - alpha) * L_CE + alpha * (T^2) * L_KL (scalar)
-        ce_loss: Standard cross-entropy loss (scalar, for logging)
-        kl_loss: Unscaled KL divergence D_KL(P_T || P_S) (scalar, for logging)
+        ce_loss: Mean cross-entropy loss (detached scalar, for logging)
+        kl_loss: Mean KL divergence D_KL(P_T || P_S) (detached scalar, for logging)
     """
-    # 1. Cast logits and probabilities to float32 for numerical stability (Rule 3)
-    s_logits_f32 = student_logits.float()
-    t_probs_f32 = teacher_probs.float()
+    from torch.utils.checkpoint import checkpoint
 
-    B, T, V = s_logits_f32.shape
+    V = student_logits.size(-1)
+    # Flatten across batch and sequence dimensions: (N, V) where N = B * T
+    # Note: views do not copy memory or cast to float32
+    s_flat = student_logits.view(-1, V)
+    t_flat = teacher_probs.view(-1, V)
+    y_flat = targets.view(-1)
+    N = s_flat.size(0)
 
-    # 2. Hard Cross-Entropy Loss against ground-truth targets
-    # Flatten (B, T, V) -> (B*T, V) and (B, T) -> (B*T,)
-    ce_loss = F.cross_entropy(s_logits_f32.view(-1, V), targets.view(-1))
+    # Inner chunk function: computes row sums in float32 without keeping big tensors
+    def _chunk_fn(s_c: torch.Tensor, t_c: torch.Tensor, y_c: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        s_f32 = s_c.float()
+        t_f32 = t_c.float()
+        # Sum of CE loss over chunk rows at T=1
+        ce_c = F.cross_entropy(s_f32, y_c, reduction="sum")
+        # Sum of KL divergence over chunk rows at temperature T
+        log_s_c = F.log_softmax(s_f32 / temperature, dim=-1)
+        kl_c = F.kl_div(log_s_c, t_f32, reduction="sum")
+        return ce_c, kl_c
 
-    # 3. Soft Distillation Loss via KL Divergence
-    # Student log-probabilities at temperature T: shape (B*T, V)
-    s_log_probs = F.log_softmax(s_logits_f32 / temperature, dim=-1).view(-1, V)
-    t_probs_flat = t_probs_f32.view(-1, V)
+    tot_ce = torch.zeros((), dtype=torch.float32, device=s_flat.device)
+    tot_kl = torch.zeros((), dtype=torch.float32, device=s_flat.device)
 
-    # PyTorch kl_div: D_KL(target || input) = sum(target * (log(target) - input))
-    # reduction="batchmean" divides by (B * T), giving true mathematical expectation
-    kl_div = F.kl_div(s_log_probs, t_probs_flat, reduction="batchmean")
+    # Process in row chunks
+    for i in range(0, N, loss_chunk):
+        s_c = s_flat[i : i + loss_chunk]
+        t_c = t_flat[i : i + loss_chunk]
+        y_c = y_flat[i : i + loss_chunk]
 
-    # 4. Scale KL divergence by T^2 to keep gradient magnitudes consistent across temperatures
-    kd_loss = (temperature ** 2) * kl_div
+        # Use activation checkpointing during training to discard big intermediate tensors
+        if torch.is_grad_enabled() and s_c.requires_grad:
+            ce_c, kl_c = checkpoint(_chunk_fn, s_c, t_c, y_c, use_reentrant=False)
+        else:
+            ce_c, kl_c = _chunk_fn(s_c, t_c, y_c)
 
-    # 5. Combined convex combination
-    total_loss = (1.0 - alpha) * ce_loss + alpha * kd_loss
+        tot_ce = tot_ce + ce_c
+        tot_kl = tot_kl + kl_c
 
-    return total_loss, ce_loss, kl_div
+    # Divide sums by total number of rows N to obtain exact means
+    ce_loss = tot_ce / N
+    kl_loss = tot_kl / N
+
+    # Combined loss scaled by T^2 for gradient consistency
+    total_loss = (1.0 - alpha) * ce_loss + alpha * (temperature ** 2) * kl_loss
+
+    return total_loss, ce_loss.detach(), kl_loss.detach()
 
 
 class Distiller:
@@ -220,12 +245,14 @@ class Distiller:
         temperature: float = 2.0,
         alpha: float = 0.5,
         teacher_chunk: int = 16,
+        loss_chunk: int = 2048,
         device: str = "cpu",
     ):
         self.device = device
         self.temperature = float(temperature)
         self.alpha = float(alpha)
         self.teacher_chunk = int(teacher_chunk)
+        self.loss_chunk = int(loss_chunk)
 
         # 1. Initialize teacher model first so we can reliably inspect its config
         self.teacher = TeacherModel(
@@ -275,13 +302,14 @@ class Distiller:
             chunk_size=self.teacher_chunk,
         )
 
-        # 2. Compute combined loss
+        # 2. Compute combined loss with row-chunked memory checkpointing
         return distillation_loss(
             student_logits=student_logits,
             teacher_probs=teacher_probs,
             targets=y,
             temperature=self.temperature,
             alpha=self.alpha,
+            loss_chunk=self.loss_chunk,
         )
 
 
@@ -298,6 +326,52 @@ if __name__ == "__main__":
     print("Running Full Distillation Unit & Integration Verification")
     print("=" * 60)
 
+    # -------------------------------------------------------------
+    # 0. Mathematical Equivalence Test: Chunked vs Unchunked Loss
+    # -------------------------------------------------------------
+    print("Test 0: Verifying mathematical equivalence of row-chunked loss...")
+    def _reference_unchunked_loss(s_logits, t_probs, tgts, temp, alp):
+        s_f = s_logits.float()
+        t_f = t_probs.float()
+        V_dim = s_f.size(-1)
+        ce = F.cross_entropy(s_f.view(-1, V_dim), tgts.view(-1))
+        log_s = F.log_softmax(s_f / temp, dim=-1).view(-1, V_dim)
+        kl = F.kl_div(log_s, t_f.view(-1, V_dim), reduction="batchmean")
+        tot = (1.0 - alp) * ce + alp * (temp ** 2) * kl
+        return tot, ce, kl
+
+    torch.manual_seed(999)
+    # N = 23 (prime number) with loss_chunk = 7 (does not divide N evenly)
+    test_B, test_T, test_V = 1, 23, 17
+    s_raw = torch.randn(test_B, test_T, test_V)
+    t_logits = torch.randn(test_B, test_T, test_V)
+    t_probs_test = F.softmax(t_logits, dim=-1)
+    y_test = torch.randint(0, test_V, (test_B, test_T))
+
+    s_ref = s_raw.clone().detach().requires_grad_(True)
+    s_chk = s_raw.clone().detach().requires_grad_(True)
+
+    ref_tot, ref_ce, ref_kl = _reference_unchunked_loss(s_ref, t_probs_test, y_test, temp=2.3, alp=0.65)
+    ref_tot.backward()
+
+    chk_tot, chk_ce, chk_kl = distillation_loss(s_chk, t_probs_test, y_test, temperature=2.3, alpha=0.65, loss_chunk=7)
+    chk_tot.backward()
+
+    tot_diff = (ref_tot - chk_tot).abs().item()
+    ce_diff = (ref_ce - chk_ce).abs().item()
+    kl_diff = (ref_kl - chk_kl).abs().item()
+    grad_diff = (s_ref.grad - s_chk.grad).abs().max().item()
+
+    print(f"     Max diffs -> total: {tot_diff:.2e} | ce: {ce_diff:.2e} | kl: {kl_diff:.2e} | grad: {grad_diff:.2e}")
+    assert tot_diff < 1e-6, f"Total loss diff {tot_diff} exceeded 1e-6!"
+    assert ce_diff < 1e-6, f"CE loss diff {ce_diff} exceeded 1e-6!"
+    assert kl_diff < 1e-6, f"KL loss diff {kl_diff} exceeded 1e-6!"
+    assert grad_diff < 1e-6, f"Gradient max diff {grad_diff} exceeded 1e-6!"
+    print("[OK] Mathematical equivalence confirmed (values & gradients match within 1e-6).")
+
+    # -------------------------------------------------------------
+    # 1. VocabMapper & Teacher Tests
+    # -------------------------------------------------------------
     mock_vocab = {
         "gpt2_ids_kept": [10, 20, 30, 40],
         "unk_id": 4,
@@ -306,7 +380,6 @@ if __name__ == "__main__":
         "tokens": {"train": 100, "val": 10}
     }
 
-    # 1. Mock Teacher Network (GPT-2 structure with 50 vocab)
     mock_config = GPT2Config(
         vocab_size=50,
         n_positions=128,
@@ -318,17 +391,17 @@ if __name__ == "__main__":
     )
     mock_teacher_net = GPT2LMHeadModel(mock_config)
 
-    # 2. Initialize Distiller
     distiller = Distiller(
         vocab_data_or_path=mock_vocab,
         teacher_model=mock_teacher_net,
         temperature=2.0,
         alpha=0.5,
+        teacher_chunk=2,
+        loss_chunk=4,
         device="cpu",
     )
-    print("[OK] Distiller initialized successfully.")
+    print("[OK] Distiller initialized successfully with chunking.")
 
-    # 3. Instantiate Student SLM model from model.py
     student_cfg = ModelConfig(
         vocab_size=5,
         block_size=16,
@@ -341,44 +414,35 @@ if __name__ == "__main__":
     student = SLM(student_cfg)
     print("[OK] Student SLM model instantiated from src/model.py.")
 
-    # 4. Generate synthetic batch: batch_size=2, sequence_length=8
     B, T = 2, 8
     x = torch.randint(0, student_cfg.vocab_size, (B, T))
     y = torch.randint(0, student_cfg.vocab_size, (B, T))
 
-    # 5. Student forward pass
     student_logits, student_ce = student(x, y)
-    assert student_logits.shape == (B, T, student_cfg.vocab_size), (
-        f"Expected student logits shape {(B, T, student_cfg.vocab_size)}, got {student_logits.shape}"
-    )
+    assert student_logits.shape == (B, T, student_cfg.vocab_size)
     print(f"[OK] Student forward pass completed. Logits shape: {student_logits.shape}")
 
-    # 6. Distillation loss calculation
     total_loss, ce_loss, kl_loss = distiller(x, y, student_logits)
     print(f"[OK] Distillation loss computed:")
     print(f"     Total Loss: {total_loss.item():.4f}")
     print(f"     CE Loss:    {ce_loss.item():.4f}")
     print(f"     KL Div:     {kl_loss.item():.4f}")
 
-    # Verify CE loss matches student's built-in CE loss
     assert torch.allclose(ce_loss, student_ce, atol=1e-4), "Distiller CE does not match model's CE!"
     print("[OK] Distiller CE loss exactly matches student model's native CE loss.")
 
-    # 7. Backward pass test: verify gradients on student, zero gradients on teacher
     student.zero_grad()
     total_loss.backward()
 
-    # Verify student parameters received valid gradients
     student_grads = [p.grad for p in student.parameters() if p.requires_grad]
     assert all(g is not None for g in student_grads), "Some student parameters did not receive gradients!"
     assert all(not torch.isnan(g).any() for g in student_grads), "Student gradients contain NaN!"
     print("[OK] Student model gradients verified (valid, non-zero, non-NaN).")
 
-    # Verify teacher parameters received NO gradients
     teacher_grads = [p.grad for p in distiller.teacher.model.parameters()]
     assert all(g is None for g in teacher_grads), "Teacher parameters unexpectedly received gradients!"
     print("[OK] Teacher model strictly preserved without gradients.")
 
     print("=" * 60)
-    print("ALL STEP 4 INTEGRATION TESTS PASSED SUCCESSFULLY.")
+    print("ALL TESTS (INCLUDING MATHEMATICAL EQUIVALENCE) PASSED!")
     print("=" * 60)

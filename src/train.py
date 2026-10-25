@@ -138,7 +138,8 @@ def main():
         if step % 50 == 0:
             dt = time.time() - t0; t0 = time.time()
             if distiller is not None:
-                print(f"step {step} | loss {loss.item():.3f} (ce {last_ce.item():.3f} kl {last_kl.item():.3f}) | lr {lr:.2e} | {dt/50*1000:.0f} ms/step")
+                mem_str = f" | max_mem {torch.cuda.max_memory_allocated() / (1024 ** 3):.2f} GiB" if device == "cuda" else ""
+                print(f"step {step} | loss {loss.item():.3f} (ce {last_ce.item():.3f} kl {last_kl.item():.3f}) | lr {lr:.2e} | {dt/50*1000:.0f} ms/step{mem_str}")
             else:
                 print(f"step {step} | loss {loss.item():.3f} | lr {lr:.2e} | {dt/50*1000:.0f} ms/step")
         if step % a.eval_interval == 0 or step == a.max_steps:
