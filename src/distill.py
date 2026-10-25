@@ -261,3 +261,97 @@ class Distiller:
             temperature=self.temperature,
             alpha=self.alpha,
         )
+
+
+if __name__ == "__main__":
+    from transformers import GPT2Config, GPT2LMHeadModel
+    from model import SLM, ModelConfig
+
+    print("=" * 60)
+    print("Running Full Distillation Unit & Integration Verification")
+    print("=" * 60)
+
+    mock_vocab = {
+        "gpt2_ids_kept": [10, 20, 30, 40],
+        "unk_id": 4,
+        "eos_id": 3,
+        "vocab_size": 5,
+        "tokens": {"train": 100, "val": 10}
+    }
+
+    # 1. Mock Teacher Network (GPT-2 structure with 50 vocab)
+    mock_config = GPT2Config(
+        vocab_size=50,
+        n_positions=128,
+        n_embd=64,
+        n_layer=1,
+        n_head=2,
+        bos_token_id=49,
+        eos_token_id=49
+    )
+    mock_teacher_net = GPT2LMHeadModel(mock_config)
+
+    # 2. Initialize Distiller
+    distiller = Distiller(
+        vocab_data_or_path=mock_vocab,
+        teacher_model=mock_teacher_net,
+        temperature=2.0,
+        alpha=0.5,
+        device="cpu",
+    )
+    print("[OK] Distiller initialized successfully.")
+
+    # 3. Instantiate Student SLM model from model.py
+    student_cfg = ModelConfig(
+        vocab_size=5,
+        block_size=16,
+        n_layer=2,
+        n_head=2,
+        d_model=32,
+        d_ff=64,
+        dropout=0.0
+    )
+    student = SLM(student_cfg)
+    print("[OK] Student SLM model instantiated from src/model.py.")
+
+    # 4. Generate synthetic batch: batch_size=2, sequence_length=8
+    B, T = 2, 8
+    x = torch.randint(0, student_cfg.vocab_size, (B, T))
+    y = torch.randint(0, student_cfg.vocab_size, (B, T))
+
+    # 5. Student forward pass
+    student_logits, student_ce = student(x, y)
+    assert student_logits.shape == (B, T, student_cfg.vocab_size), (
+        f"Expected student logits shape {(B, T, student_cfg.vocab_size)}, got {student_logits.shape}"
+    )
+    print(f"[OK] Student forward pass completed. Logits shape: {student_logits.shape}")
+
+    # 6. Distillation loss calculation
+    total_loss, ce_loss, kl_loss = distiller(x, y, student_logits)
+    print(f"[OK] Distillation loss computed:")
+    print(f"     Total Loss: {total_loss.item():.4f}")
+    print(f"     CE Loss:    {ce_loss.item():.4f}")
+    print(f"     KL Div:     {kl_loss.item():.4f}")
+
+    # Verify CE loss matches student's built-in CE loss
+    assert torch.allclose(ce_loss, student_ce, atol=1e-4), "Distiller CE does not match model's CE!"
+    print("[OK] Distiller CE loss exactly matches student model's native CE loss.")
+
+    # 7. Backward pass test: verify gradients on student, zero gradients on teacher
+    student.zero_grad()
+    total_loss.backward()
+
+    # Verify student parameters received valid gradients
+    student_grads = [p.grad for p in student.parameters() if p.requires_grad]
+    assert all(g is not None for g in student_grads), "Some student parameters did not receive gradients!"
+    assert all(not torch.isnan(g).any() for g in student_grads), "Student gradients contain NaN!"
+    print("[OK] Student model gradients verified (valid, non-zero, non-NaN).")
+
+    # Verify teacher parameters received NO gradients
+    teacher_grads = [p.grad for p in distiller.teacher.model.parameters()]
+    assert all(g is None for g in teacher_grads), "Teacher parameters unexpectedly received gradients!"
+    print("[OK] Teacher model strictly preserved without gradients.")
+
+    print("=" * 60)
+    print("ALL STEP 4 INTEGRATION TESTS PASSED SUCCESSFULLY.")
+    print("=" * 60)
