@@ -106,7 +106,12 @@ class TeacherModel(nn.Module):
         self.device = device
 
     @torch.no_grad()
-    def get_soft_targets(self, student_ids: torch.Tensor, temperature: float = 2.0) -> torch.Tensor:
+    def get_soft_targets(
+        self,
+        student_ids: torch.Tensor,
+        temperature: float = 2.0,
+        chunk_size: int = 16,
+    ) -> torch.Tensor:
         """
         Runs teacher inference on a batch of student tokens and returns
         the temperature-scaled probability distribution over the student vocabulary.
@@ -114,10 +119,20 @@ class TeacherModel(nn.Module):
         Args:
             student_ids: Tensor of shape (B, T) with student token IDs
             temperature: Softmax temperature T (> 0). Higher = softer distribution.
+            chunk_size: Process in sub-batches along dim 0 to prevent GPU OOM.
 
         Returns:
             student_target_probs: Float32 tensor of shape (B, T, vocab_size) summing to 1.0
         """
+        B = student_ids.size(0)
+        # If batch is larger than chunk_size, process in sub-batches to save memory
+        if chunk_size and chunk_size > 0 and B > chunk_size:
+            chunks = [
+                self.get_soft_targets(student_ids[i:i + chunk_size], temperature=temperature, chunk_size=0)
+                for i in range(0, B, chunk_size)
+            ]
+            return torch.cat(chunks, dim=0)
+
         # 1. Translate student token IDs to GPT-2 token IDs: (B, T)
         teacher_ids = self.vocab_mapper.to_teacher_tokens(student_ids)
 
@@ -204,32 +219,35 @@ class Distiller:
         teacher_model="gpt2",
         temperature: float = 2.0,
         alpha: float = 0.5,
+        teacher_chunk: int = 16,
         device: str = "cpu",
-        gpt2_vocab_size: int = 50257,
-        gpt2_eos_id: int = 50256,
     ):
         self.device = device
         self.temperature = float(temperature)
         self.alpha = float(alpha)
+        self.teacher_chunk = int(teacher_chunk)
 
-        # If a pre-instantiated model is passed, inherit its vocab size and eos id
-        if hasattr(teacher_model, "config"):
-            gpt2_vocab_size = getattr(teacher_model.config, "vocab_size", gpt2_vocab_size)
-            gpt2_eos_id = getattr(teacher_model.config, "eos_token_id", gpt2_eos_id)
-            if gpt2_eos_id is None:
-                gpt2_eos_id = gpt2_vocab_size - 1
-
-        self.vocab_mapper = VocabMapper(
-            vocab_data_or_path,
-            gpt2_vocab_size=gpt2_vocab_size,
-            gpt2_eos_id=gpt2_eos_id,
-        ).to(device)
-
+        # 1. Initialize teacher model first so we can reliably inspect its config
         self.teacher = TeacherModel(
             model_name_or_model=teacher_model,
-            vocab_mapper=self.vocab_mapper,
+            vocab_mapper=None,
             device=device,
         )
+
+        teacher_vocab_size = getattr(self.teacher.model.config, "vocab_size", 50257)
+        teacher_eos_id = getattr(self.teacher.model.config, "eos_token_id", 50256)
+        if teacher_eos_id is None:
+            teacher_eos_id = teacher_vocab_size - 1
+
+        # 2. Initialize VocabMapper with the teacher's true vocab size and eos id
+        self.vocab_mapper = VocabMapper(
+            vocab_data_or_path,
+            gpt2_vocab_size=teacher_vocab_size,
+            gpt2_eos_id=teacher_eos_id,
+        ).to(device)
+
+        # 3. Connect vocab_mapper to the teacher
+        self.teacher.vocab_mapper = self.vocab_mapper
 
     def __call__(
         self,
@@ -250,8 +268,12 @@ class Distiller:
             ce_loss: Scalar cross-entropy loss (for logging)
             kl_loss: Scalar KL divergence (for logging)
         """
-        # 1. Obtain soft targets from frozen teacher: shape (B, T, vocab_size)
-        teacher_probs = self.teacher.get_soft_targets(x, temperature=self.temperature)
+        # 1. Obtain soft targets from frozen teacher in teacher_chunk slices: shape (B, T, vocab_size)
+        teacher_probs = self.teacher.get_soft_targets(
+            x,
+            temperature=self.temperature,
+            chunk_size=self.teacher_chunk,
+        )
 
         # 2. Compute combined loss
         return distillation_loss(
@@ -264,6 +286,11 @@ class Distiller:
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--selftest", action="store_true", help="run distillation self-tests")
+    args = parser.parse_args()
+
     from transformers import GPT2Config, GPT2LMHeadModel
     from model import SLM, ModelConfig
 

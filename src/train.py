@@ -22,12 +22,18 @@ def get_args():
     ap.add_argument("--eval_iters", type=int, default=50)
     ap.add_argument("--save_interval", type=int, default=500)
     ap.add_argument("--seed", type=int, default=1337)
+    ap.add_argument("--teacher", default=None, help="teacher model, e.g. gpt2 (None = baseline training)")
+    ap.add_argument("--kd_temp", type=float, default=2.0, help="distillation temperature")
+    ap.add_argument("--kd_alpha", type=float, default=0.5, help="distillation loss weight in [0, 1]")
+    ap.add_argument("--teacher_chunk", type=int, default=16, help="sub-batch size for teacher forward pass to prevent OOM")
     return ap.parse_args()
 
 
 def main():
     a = get_args()
     out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True)
+    with open(out / "run_args.json", "w") as f:
+        json.dump(vars(a), f, indent=2)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_amp = device == "cuda"
     torch.manual_seed(a.seed); np.random.seed(a.seed)
@@ -53,6 +59,19 @@ def main():
         [{"params": decay, "weight_decay": a.weight_decay},
          {"params": no_decay, "weight_decay": 0.0}], lr=a.lr, betas=(0.9, 0.95))
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    # ---- optional knowledge distillation
+    distiller = None
+    if a.teacher:
+        from distill import Distiller
+        distiller = Distiller(
+            vocab_data_or_path=Path(a.data_dir) / "vocab.json",
+            teacher_model=a.teacher,
+            temperature=a.kd_temp,
+            alpha=a.kd_alpha,
+            teacher_chunk=a.teacher_chunk,
+            device=device,
+        )
 
     # ---- resume if a checkpoint exists
     step, best_val = 0, float("inf")
@@ -96,14 +115,19 @@ def main():
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params/1e6:.1f}M vocab={cfg.vocab_size} "
-          f"tokens/step={a.batch_size * a.block_size}")
+          f"tokens/step={a.batch_size * a.block_size}"
+          + (f" | teacher={a.teacher} T={a.kd_temp} alpha={a.kd_alpha}" if a.teacher else " | baseline"))
     model.train(); t0 = time.time()
     while step < a.max_steps:
         lr = get_lr(step)
         for g in opt.param_groups: g["lr"] = lr
         x, y = get_batch("train")
         with torch.autocast(device, dtype=torch.float16, enabled=use_amp):
-            _, loss = model(x, y)
+            if distiller is not None:
+                logits, _ = model(x, y)
+                loss, last_ce, last_kl = distiller(x, y, logits)
+            else:
+                _, loss = model(x, y)
         opt.zero_grad(set_to_none=True)
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
@@ -113,7 +137,10 @@ def main():
 
         if step % 50 == 0:
             dt = time.time() - t0; t0 = time.time()
-            print(f"step {step} | loss {loss.item():.3f} | lr {lr:.2e} | {dt/50*1000:.0f} ms/step")
+            if distiller is not None:
+                print(f"step {step} | loss {loss.item():.3f} (ce {last_ce.item():.3f} kl {last_kl.item():.3f}) | lr {lr:.2e} | {dt/50*1000:.0f} ms/step")
+            else:
+                print(f"step {step} | loss {loss.item():.3f} | lr {lr:.2e} | {dt/50*1000:.0f} ms/step")
         if step % a.eval_interval == 0 or step == a.max_steps:
             r = evaluate(); ppl = math.exp(r["val"])
             print(f">>> step {step} | train {r['train']:.3f} | val {r['val']:.3f} | val ppl {ppl:.2f}")
