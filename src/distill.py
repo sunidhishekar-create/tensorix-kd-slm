@@ -136,11 +136,15 @@ class TeacherModel(nn.Module):
         # 1. Translate student token IDs to GPT-2 token IDs: (B, T)
         teacher_ids = self.vocab_mapper.to_teacher_tokens(student_ids)
 
-        # 2. Run teacher forward pass without gradients: logits shape (B, T, 50257)
-        outputs = self.model(input_ids=teacher_ids)
-        teacher_logits = outputs.logits
+        # 2. Run teacher forward pass: on cuda, run under autocast float16 for Tensor Core speedup;
+        # on cpu, keep fp32 and no autocast.
+        device_type = "cuda" if teacher_ids.is_cuda else "cpu"
+        use_amp = teacher_ids.is_cuda
+        with torch.autocast(device_type, dtype=torch.float16, enabled=use_amp):
+            outputs = self.model(input_ids=teacher_ids)
+            teacher_logits = outputs.logits
 
-        # 3. Always compute softmax in float32 for numerical stability (Rule 3)
+        # 3. Immediately convert logits to float32 for numerical stability (Rule 3)
         teacher_logits = teacher_logits.float()
 
         # 4. Softmax with temperature scaling: shape (B, T, 50257)
