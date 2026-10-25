@@ -189,3 +189,75 @@ def distillation_loss(
     total_loss = (1.0 - alpha) * ce_loss + alpha * kd_loss
 
     return total_loss, ce_loss, kl_div
+
+
+class Distiller:
+    """
+    High-level orchestrator for Knowledge Distillation:
+      - Translates vocabulary via VocabMapper
+      - Obtains soft targets from frozen TeacherModel
+      - Computes combined distillation loss (CE + KD)
+    """
+    def __init__(
+        self,
+        vocab_data_or_path,
+        teacher_model="gpt2",
+        temperature: float = 2.0,
+        alpha: float = 0.5,
+        device: str = "cpu",
+        gpt2_vocab_size: int = 50257,
+        gpt2_eos_id: int = 50256,
+    ):
+        self.device = device
+        self.temperature = float(temperature)
+        self.alpha = float(alpha)
+
+        # If a pre-instantiated model is passed, inherit its vocab size and eos id
+        if hasattr(teacher_model, "config"):
+            gpt2_vocab_size = getattr(teacher_model.config, "vocab_size", gpt2_vocab_size)
+            gpt2_eos_id = getattr(teacher_model.config, "eos_token_id", gpt2_eos_id)
+            if gpt2_eos_id is None:
+                gpt2_eos_id = gpt2_vocab_size - 1
+
+        self.vocab_mapper = VocabMapper(
+            vocab_data_or_path,
+            gpt2_vocab_size=gpt2_vocab_size,
+            gpt2_eos_id=gpt2_eos_id,
+        ).to(device)
+
+        self.teacher = TeacherModel(
+            model_name_or_model=teacher_model,
+            vocab_mapper=self.vocab_mapper,
+            device=device,
+        )
+
+    def __call__(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        student_logits: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Computes distillation loss given student batch and student predictions.
+
+        Args:
+            x: Input token IDs of shape (B, T)
+            y: Target token IDs of shape (B, T)
+            student_logits: Student logits of shape (B, T, vocab_size)
+
+        Returns:
+            total_loss: Loss for backpropagation: (1 - alpha) * L_CE + alpha * (T^2) * L_KL
+            ce_loss: Scalar cross-entropy loss (for logging)
+            kl_loss: Scalar KL divergence (for logging)
+        """
+        # 1. Obtain soft targets from frozen teacher: shape (B, T, vocab_size)
+        teacher_probs = self.teacher.get_soft_targets(x, temperature=self.temperature)
+
+        # 2. Compute combined loss
+        return distillation_loss(
+            student_logits=student_logits,
+            teacher_probs=teacher_probs,
+            targets=y,
+            temperature=self.temperature,
+            alpha=self.alpha,
+        )
