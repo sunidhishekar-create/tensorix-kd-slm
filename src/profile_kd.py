@@ -69,68 +69,76 @@ def instrumented_get_soft_targets(
       6. Dropped-column pooling (sum & clamp)
       7. Assembly concatenation
     """
-    B = student_ids.size(0)
+    B, T = student_ids.shape
     device_type = "cuda" if student_ids.is_cuda else "cpu"
     use_amp = student_ids.is_cuda
+
+    out = torch.empty(
+        (B, T, teacher.vocab_mapper.vocab_size),
+        dtype=torch.float32,
+        device=student_ids.device,
+    )
 
     # If chunk_size is provided, process in sub-batches along dim 0
     sub_batch_slices = [
         (i, min(i + chunk_size, B)) for i in range(0, B, chunk_size)
     ] if (chunk_size and chunk_size > 0 and B > chunk_size) else [(0, B)]
 
-    out_chunks = []
-    for start_idx, end_idx in sub_batch_slices:
-        chunk_ids = student_ids[start_idx:end_idx]
+    with torch.autocast(device_type, dtype=torch.float16, enabled=use_amp):
+        for start_idx, end_idx in sub_batch_slices:
+            chunk_ids = student_ids[start_idx:end_idx]
 
-        # Stage 1: Vocabulary token translation
-        t_trans = Timer(is_cuda); t_trans.start()
-        teacher_ids = teacher.vocab_mapper.to_teacher_tokens(chunk_ids)
-        t_trans.stop()
-        timers["b1_token_translation"].append(t_trans)
+            # Stage 1: Vocabulary token translation
+            t_trans = Timer(is_cuda); t_trans.start()
+            teacher_ids = teacher.vocab_mapper.to_teacher_tokens(chunk_ids)
+            t_trans.stop()
+            timers["b1_token_translation"].append(t_trans)
 
-        # Stage 2: GPT-2 forward pass
-        t_fwd = Timer(is_cuda); t_fwd.start()
-        with torch.autocast(device_type, dtype=torch.float16, enabled=use_amp):
+            # Stage 2: GPT-2 forward pass
+            t_fwd = Timer(is_cuda); t_fwd.start()
             outputs = teacher.model(input_ids=teacher_ids)
             t_logits = outputs.logits
-        t_fwd.stop()
-        timers["b2_gpt2_forward"].append(t_fwd)
+            t_fwd.stop()
+            timers["b2_gpt2_forward"].append(t_fwd)
 
-        # Stage 3: Float32 conversion and temperature division
-        t_scale = Timer(is_cuda); t_scale.start()
-        t_logits_f32 = t_logits.float() / temperature
-        t_scale.stop()
-        timers["b3_logits_float_and_temp"].append(t_scale)
+            # Stage 3: Float32 conversion and in-place temperature division
+            t_scale = Timer(is_cuda); t_scale.start()
+            t_logits_f32 = t_logits.float()
+            t_logits_f32.div_(temperature)
+            t_scale.stop()
+            timers["b3_logits_float_and_temp"].append(t_scale)
 
-        # Stage 4: Softmax over 50,257 classes
-        t_sm = Timer(is_cuda); t_sm.start()
-        t_probs = F.softmax(t_logits_f32, dim=-1)
-        t_sm.stop()
-        timers["b4_softmax_50k"].append(t_sm)
+            # Stage 4: Softmax over 50,257 classes
+            t_sm = Timer(is_cuda); t_sm.start()
+            t_probs = F.softmax(t_logits_f32, dim=-1)
+            t_sm.stop()
+            timers["b4_softmax_50k"].append(t_sm)
 
-        # Stage 5: Kept-column gather (index_select)
-        t_gath = Timer(is_cuda); t_gath.start()
-        kept_probs = t_probs.index_select(dim=-1, index=teacher.vocab_mapper.gpt2_ids_kept)
-        t_gath.stop()
-        timers["b5_kept_gather"].append(t_gath)
+            # Stage 5: Kept-column gather (index_select directly into output slice)
+            chunk_out = out[start_idx:end_idx]
+            t_gath = Timer(is_cuda); t_gath.start()
+            torch.index_select(
+                t_probs,
+                dim=-1,
+                index=teacher.vocab_mapper.gpt2_ids_kept,
+                out=chunk_out[..., :teacher.vocab_mapper.unk_id],
+            )
+            t_gath.stop()
+            timers["b5_kept_gather"].append(t_gath)
 
-        # Stage 6: Dropped-column pooling (logsumexp equivalent: 1 - sum(kept))
-        t_drop = Timer(is_cuda); t_drop.start()
-        unk_prob = (1.0 - kept_probs.sum(dim=-1, keepdim=True)).clamp(min=0.0)
-        t_drop.stop()
-        timers["b6_dropped_pooling"].append(t_drop)
+            # Stage 6: Dropped-column pooling (logsumexp equivalent: 1 - sum(kept))
+            t_drop = Timer(is_cuda); t_drop.start()
+            kept_sum = chunk_out[..., :teacher.vocab_mapper.unk_id].sum(dim=-1, keepdim=True)
+            chunk_out[..., teacher.vocab_mapper.unk_id:] = (1.0 - kept_sum).clamp(min=0.0)
+            t_drop.stop()
+            timers["b6_dropped_pooling"].append(t_drop)
 
-        # Stage 7: Concat & student vocab assembly
-        t_cat = Timer(is_cuda); t_cat.start()
-        student_probs = torch.cat([kept_probs, unk_prob], dim=-1)
-        t_cat.stop()
-        timers["b7_concat_assembly"].append(t_cat)
+            # Stage 7: Concat & student vocab assembly (0.0 ms because written in-place!)
+            t_cat = Timer(is_cuda); t_cat.start()
+            t_cat.stop()
+            timers["b7_concat_assembly"].append(t_cat)
 
-        out_chunks.append(student_probs)
-
-    if len(out_chunks) == 1:
-        return out_chunks[0]
-    return torch.cat(out_chunks, dim=0)
+    return out
 
 
 def get_args():

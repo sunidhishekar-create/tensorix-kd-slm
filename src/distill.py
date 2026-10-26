@@ -88,12 +88,31 @@ class TeacherModel(nn.Module):
         super().__init__()
         from transformers import GPT2LMHeadModel
 
+        is_cuda = str(device).startswith("cuda") or (isinstance(device, torch.device) and device.type == "cuda")
+
         # Allow passing a model name string or an existing model instance
         if isinstance(model_name_or_model, str):
-            print(f"Loading teacher model '{model_name_or_model}'...")
-            self.model = GPT2LMHeadModel.from_pretrained(model_name_or_model)
+            print(f"Loading teacher model '{model_name_or_model}' (device: {device})...")
+            load_kwargs = {}
+            if is_cuda:
+                load_kwargs["torch_dtype"] = torch.float16
+                try:
+                    self.model = GPT2LMHeadModel.from_pretrained(
+                        model_name_or_model,
+                        attn_implementation="sdpa",
+                        **load_kwargs,
+                    )
+                except Exception:
+                    self.model = GPT2LMHeadModel.from_pretrained(
+                        model_name_or_model,
+                        **load_kwargs,
+                    )
+            else:
+                self.model = GPT2LMHeadModel.from_pretrained(model_name_or_model)
         else:
             self.model = model_name_or_model
+            if is_cuda:
+                self.model.to(torch.float16)
 
         self.model.to(device)
         self.model.eval()
@@ -124,37 +143,142 @@ class TeacherModel(nn.Module):
         Returns:
             student_target_probs: Float32 tensor of shape (B, T, vocab_size) summing to 1.0
         """
-        B = student_ids.size(0)
-        # If batch is larger than chunk_size, process in sub-batches to save memory
-        if chunk_size and chunk_size > 0 and B > chunk_size:
-            chunks = [
-                self.get_soft_targets(student_ids[i:i + chunk_size], temperature=temperature, chunk_size=0)
-                for i in range(0, B, chunk_size)
-            ]
-            return torch.cat(chunks, dim=0)
+        B, T = student_ids.shape
+        device_type = "cuda" if student_ids.is_cuda else "cpu"
+        use_amp = student_ids.is_cuda
 
-        # 1. Translate student token IDs to GPT-2 token IDs: (B, T)
-        teacher_ids = self.vocab_mapper.to_teacher_tokens(student_ids)
+        out = torch.empty(
+            (B, T, self.vocab_mapper.vocab_size),
+            dtype=torch.float32,
+            device=student_ids.device,
+        )
 
-        # 2. Run teacher forward pass: on cuda, run under autocast float16 for Tensor Core speedup;
-        # on cpu, keep fp32 and no autocast.
-        device_type = "cuda" if teacher_ids.is_cuda else "cpu"
-        use_amp = teacher_ids.is_cuda
+        sub_batch_slices = [
+            (i, min(i + chunk_size, B)) for i in range(0, B, chunk_size)
+        ] if (chunk_size and chunk_size > 0 and B > chunk_size) else [(0, B)]
+
+        # Entire extraction runs under ONE autocast context
         with torch.autocast(device_type, dtype=torch.float16, enabled=use_amp):
-            outputs = self.model(input_ids=teacher_ids)
-            teacher_logits = outputs.logits
+            for start_idx, end_idx in sub_batch_slices:
+                chunk_ids = student_ids[start_idx:end_idx]
 
-        # 3. Immediately convert logits to float32 for numerical stability (Rule 3)
-        teacher_logits = teacher_logits.float()
+                # 1. Translate student token IDs to GPT-2 token IDs: (B_chunk, T)
+                teacher_ids = self.vocab_mapper.to_teacher_tokens(chunk_ids)
 
-        # 4. Softmax with temperature scaling: shape (B, T, 50257)
-        # As T increases, differences between top tokens and tail tokens soften
-        teacher_probs = F.softmax(teacher_logits / temperature, dim=-1)
+                # 2. Run teacher forward pass with true half-precision weights
+                outputs = self.model(input_ids=teacher_ids)
+                t_logits = outputs.logits
 
-        # 5. Project teacher distribution down to student vocabulary: shape (B, T, vocab_size)
-        student_target_probs = self.vocab_mapper.teacher_probs_to_student_probs(teacher_probs)
+                # 3. Convert to float32 and scale in-place to avoid redundant full-size tensor allocations
+                t_logits_f32 = t_logits.float()
+                t_logits_f32.div_(temperature)
 
-        return student_target_probs
+                # 4. Softmax over 50,257 classes in float32
+                t_probs = F.softmax(t_logits_f32, dim=-1)
+
+                # 5. Project into preallocated slice of student vocabulary
+                chunk_out = out[start_idx:end_idx]
+                torch.index_select(
+                    t_probs,
+                    dim=-1,
+                    index=self.vocab_mapper.gpt2_ids_kept,
+                    out=chunk_out[..., :self.vocab_mapper.unk_id],
+                )
+                kept_sum = chunk_out[..., :self.vocab_mapper.unk_id].sum(dim=-1, keepdim=True)
+                chunk_out[..., self.vocab_mapper.unk_id:] = (1.0 - kept_sum).clamp(min=0.0)
+
+        return out
+
+
+class _RowChunkedDistillationLossFunction(torch.autograd.Function):
+    """
+    Custom autograd function computing row-chunked distillation loss and analytic gradient.
+
+    In forward:
+      Per row-chunk of size loss_chunk, computes:
+        - Cross-entropy loss piece
+        - KL divergence piece
+        - Analytic gradient w.r.t student logits:
+            d loss / d z = [ alpha*T*(q_T - p) + (1-alpha)*(softmax(z) - onehot(y)) ] / N
+      Stores the gradient in a preallocated (N, V) tensor matching the student logits' dtype.
+      Discards all chunk intermediates immediately, requiring NO activation graph retention.
+
+    In backward:
+      Simply returns grad_output * stored_grad (O(1) execution, zero recomputation).
+    """
+    @staticmethod
+    def forward(
+        ctx,
+        student_logits: torch.Tensor,
+        teacher_probs: torch.Tensor,
+        targets: torch.Tensor,
+        temperature: float,
+        alpha: float,
+        loss_chunk: int,
+    ):
+        V = student_logits.size(-1)
+        s_flat = student_logits.view(-1, V)
+        t_flat = teacher_probs.view(-1, V)
+        y_flat = targets.view(-1)
+        N = s_flat.size(0)
+
+        needs_grad = student_logits.requires_grad
+        grad_s = torch.empty_like(s_flat) if needs_grad else None
+
+        tot_ce = torch.zeros((), dtype=torch.float32, device=s_flat.device)
+        tot_kl = torch.zeros((), dtype=torch.float32, device=s_flat.device)
+
+        inv_N = 1.0 / N
+        alpha_T = alpha * temperature
+        one_minus_alpha = 1.0 - alpha
+        inv_T = 1.0 / temperature
+
+        for i in range(0, N, loss_chunk):
+            s_c = s_flat[i : i + loss_chunk].float()
+            t_c = t_flat[i : i + loss_chunk].float()
+            y_c = y_flat[i : i + loss_chunk]
+
+            # 1. CE loss sum over chunk rows at T=1
+            ce_c = F.cross_entropy(s_c, y_c, reduction="sum")
+            tot_ce = tot_ce + ce_c
+
+            # 2. KL divergence sum over chunk rows at temperature T
+            log_q_T = F.log_softmax(s_c * inv_T, dim=-1)
+            kl_c = F.kl_div(log_q_T, t_c, reduction="sum")
+            tot_kl = tot_kl + kl_c
+
+            # 3. Analytic gradient calculation in float32
+            if needs_grad:
+                q_T = F.softmax(s_c * inv_T, dim=-1)
+                softmax_s = F.softmax(s_c, dim=-1)
+
+                chunk_grad = alpha_T * (q_T - t_c) + one_minus_alpha * softmax_s
+                chunk_grad.scatter_add_(
+                    -1,
+                    y_c.unsqueeze(-1),
+                    torch.full((y_c.size(0), 1), -one_minus_alpha, dtype=torch.float32, device=s_flat.device),
+                )
+                chunk_grad.mul_(inv_N)
+
+                grad_s[i : i + loss_chunk].copy_(chunk_grad.to(student_logits.dtype))
+
+        ce_loss = tot_ce / N
+        kl_loss = tot_kl / N
+        total_loss = one_minus_alpha * ce_loss + alpha * (temperature ** 2) * kl_loss
+
+        if needs_grad:
+            ctx.save_for_backward(grad_s.view_as(student_logits))
+        else:
+            ctx.save_for_backward(None)
+
+        return total_loss, ce_loss.detach(), kl_loss.detach()
+
+    @staticmethod
+    def backward(ctx, grad_output, grad_ce, grad_kl):
+        grad_s, = ctx.saved_tensors
+        if grad_s is None:
+            return None, None, None, None, None, None
+        return grad_output * grad_s, None, None, None, None, None
 
 
 def distillation_loss(
@@ -166,12 +290,12 @@ def distillation_loss(
     loss_chunk: int = 2048,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Computes combined Knowledge Distillation loss chunked across rows to prevent OOM:
+    Computes combined Knowledge Distillation loss chunked across rows:
         L = (1 - alpha) * L_CE + alpha * (T^2) * L_KL
 
-    Uses torch.utils.checkpoint.checkpoint(..., use_reentrant=False) per row chunk
-    so that big intermediate activation tensors (~1.4 GiB each for 16,384 x 22,875)
-    are discarded during the forward pass and recomputed one small chunk at a time.
+    Uses custom autograd function with analytic gradient calculation per row chunk.
+    Intermediate tensors are discarded immediately during forward, and backward
+    executes without recomputation by returning the precomputed gradient buffer.
 
     Args:
         student_logits: Student output logits of shape (B, T, vocab_size)
@@ -186,53 +310,14 @@ def distillation_loss(
         ce_loss: Mean cross-entropy loss (detached scalar, for logging)
         kl_loss: Mean KL divergence D_KL(P_T || P_S) (detached scalar, for logging)
     """
-    from torch.utils.checkpoint import checkpoint
-
-    V = student_logits.size(-1)
-    # Flatten across batch and sequence dimensions: (N, V) where N = B * T
-    # Note: views do not copy memory or cast to float32
-    s_flat = student_logits.view(-1, V)
-    t_flat = teacher_probs.view(-1, V)
-    y_flat = targets.view(-1)
-    N = s_flat.size(0)
-
-    # Inner chunk function: computes row sums in float32 without keeping big tensors
-    def _chunk_fn(s_c: torch.Tensor, t_c: torch.Tensor, y_c: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        s_f32 = s_c.float()
-        t_f32 = t_c.float()
-        # Sum of CE loss over chunk rows at T=1
-        ce_c = F.cross_entropy(s_f32, y_c, reduction="sum")
-        # Sum of KL divergence over chunk rows at temperature T
-        log_s_c = F.log_softmax(s_f32 / temperature, dim=-1)
-        kl_c = F.kl_div(log_s_c, t_f32, reduction="sum")
-        return ce_c, kl_c
-
-    tot_ce = torch.zeros((), dtype=torch.float32, device=s_flat.device)
-    tot_kl = torch.zeros((), dtype=torch.float32, device=s_flat.device)
-
-    # Process in row chunks
-    for i in range(0, N, loss_chunk):
-        s_c = s_flat[i : i + loss_chunk]
-        t_c = t_flat[i : i + loss_chunk]
-        y_c = y_flat[i : i + loss_chunk]
-
-        # Use activation checkpointing during training to discard big intermediate tensors
-        if torch.is_grad_enabled() and s_c.requires_grad:
-            ce_c, kl_c = checkpoint(_chunk_fn, s_c, t_c, y_c, use_reentrant=False)
-        else:
-            ce_c, kl_c = _chunk_fn(s_c, t_c, y_c)
-
-        tot_ce = tot_ce + ce_c
-        tot_kl = tot_kl + kl_c
-
-    # Divide sums by total number of rows N to obtain exact means
-    ce_loss = tot_ce / N
-    kl_loss = tot_kl / N
-
-    # Combined loss scaled by T^2 for gradient consistency
-    total_loss = (1.0 - alpha) * ce_loss + alpha * (temperature ** 2) * kl_loss
-
-    return total_loss, ce_loss.detach(), kl_loss.detach()
+    return _RowChunkedDistillationLossFunction.apply(
+        student_logits,
+        teacher_probs,
+        targets,
+        float(temperature),
+        float(alpha),
+        int(loss_chunk),
+    )
 
 
 class Distiller:
