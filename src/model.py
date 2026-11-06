@@ -8,12 +8,12 @@ import torch.nn.functional as F
 
 @dataclass
 class ModelConfig:
-    vocab_size: int = 22875   # from vocab.json
+    vocab_size: int = 49152   # SmolLM2 tokenizer
     block_size: int = 256     # max context length in tokens
-    n_layer: int = 6          # number of Transformer blocks
-    n_head: int = 6           # attention heads
-    d_model: int = 384        # width of the vectors
-    d_ff: int = 1024          # hidden size inside SwiGLU
+    n_layer: int = 8          # number of Transformer blocks
+    n_head: int = 8           # attention heads
+    d_model: int = 512        # width of the vectors
+    d_ff: int = 1408          # SwiGLU hidden size (about 2.75 x d_model, multiple of 64)
     dropout: float = 0.0
 
 
@@ -24,8 +24,9 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        inv_rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        return x * inv_rms * self.weight
+        xf = x.float()                                  # normalise in fp32 for safety
+        xf = xf * xf.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return xf.type_as(x) * self.weight
 
 
 def build_rope(head_dim, max_len, base=10000.0):
@@ -131,6 +132,14 @@ class SLM(nn.Module):
             nxt = torch.multinomial(F.softmax(logits, dim=-1), 1)
             idx = torch.cat([idx, nxt], dim=1)
         return idx
+
+
+def load_checkpoint(path, device="cpu"):
+    """Rebuild a model from any ckpt.pt / best.pt written by train.py."""
+    ck = torch.load(path, map_location=device, weights_only=False)
+    model = SLM(ModelConfig(**ck["config"])).to(device)
+    model.load_state_dict(ck["model"])
+    return model, ck
 
 
 if __name__ == "__main__":
