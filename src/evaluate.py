@@ -85,9 +85,11 @@ def main():
     if a.ckpt:
         from model import load_checkpoint
         model, ck = load_checkpoint(a.ckpt, device)
+        step = ck["step"]
+        del ck          # the loaded checkpoint dict is on the GPU; free it before measuring memory
         model.eval()
         logits_fn = lambda x: model(x)[0]
-        info.update(kind="student", source=a.ckpt, step=ck["step"])
+        info.update(kind="student", source=a.ckpt, step=step)
     else:
         from transformers import AutoModelForCausalLM
         dtype = torch.float16 if device == "cuda" else torch.float32
