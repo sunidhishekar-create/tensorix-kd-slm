@@ -36,7 +36,7 @@ Success is measured against a matched baseline (same model size, same tokens see
 - [x] SHORT baseline (5,000 steps) finished
 - [x] FULL baseline (20,000 steps) finished
 - [x] `src/evaluate.py` verified against `log.csv` (matches to four decimals for both baselines)
-- [ ] Clean notebook `notebooks/baseline_train.ipynb` tested in Colab (pending)
+- [x] Clean notebook `notebooks/baseline_train.ipynb` tested in Colab on a T4 (Cells 1 to 6; Cell 5 reproduced the `log.csv` losses)
 - [x] Teacher (SmolLM2-360M) scored with `evaluate.py`
 - [ ] Distillation runs, instruction fine-tuning, final evaluation (teammates)
 - [ ] Optional: custom-BPE tokenizer analysis (see Key design decisions)
@@ -64,10 +64,10 @@ Measured with `evaluate.py` on a T4: one forward pass of 1 x 256 tokens, fp16 (t
 
 | Model | Parameters | fp16 weights | Peak GPU memory | Latency |
 |---|---|---|---|---|
-| Student (`baseline_short`, `baseline_full`) | 50.86M | 101.7 MB | 138.5 MB | about 8 ms (8.2 / 7.9) |
+| Student (`baseline_short`, `baseline_full`) | 50.86M | 101.7 MB | 138.5 MB | about 8-9 ms (7.9 to 9.3 across runs) |
 | Teacher SmolLM2-360M | 361.82M | 723.6 MB | 782.9 MB | 47.6 ms |
 
-The student is about 7.1x smaller in parameters, about 5.7x smaller in peak memory and about 6x faster per forward pass.
+The student is about 7.1x smaller in parameters, about 5.7x smaller in peak memory and about 5-6x faster per forward pass. Latency varies slightly from run to run on the shared T4, while parameters, memory and losses are stable.
 
 ## How the project works (read this first)
 
