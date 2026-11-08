@@ -283,7 +283,7 @@ Rules:
 - Never commit data, checkpoints, tokens, API keys or SRNs. The repo is public. Keep any Hugging Face token in Colab's Secrets panel, never in code.
 - Test small first (a few steps, small batch) before spending Colab time.
 
-**Branch note:** the v2 foundation lives on `v2-rebuild` until its Pull Request is merged into `main`. Branches written against v1 (for example `feature/distillation`) assumed the old pruned-GPT-2 vocabulary, `vocab.json` and `gpt2_ids_kept`. Those no longer exist. After the merge, rebase or recreate your branch on top of `main`, and delete any id-mapping code. Old `feature/*` branches are v1 history and can be ignored.
+**Branch note:** the v2 foundation was merged into `main` (the working branch was `v2-rebuild`). Branches written against v1 (for example `feature/distillation`) assumed the old pruned-GPT-2 vocabulary, `vocab.json` and `gpt2_ids_kept`. Those no longer exist. Rebase or recreate such branches on top of `main`, and delete any id-mapping code. Old `feature/*` branches are v1 history and can be ignored.
 
 ## Rebuilding the data (only if Drive is lost)
 
