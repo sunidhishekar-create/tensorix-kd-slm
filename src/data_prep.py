@@ -1,56 +1,107 @@
-"""Build a pruned-GPT2 tokenizer for TinyStories and encode the dataset to binary files."""
-import argparse, itertools, json
+"""Tokenize C4 (en) and TinyStories with the SmolLM2 tokenizer into uint16 .bin files.
+
+Outputs in --out:
+  train.bin   C4 tokens followed by TinyStories tokens (random windows give the mix)
+  val_c4.bin, val_ts.bin   official validation splits, one per domain
+  meta.json   token counts, mix, tokenizer info
+Every document ends with the EOS id (0). Finished pieces are skipped on rerun.
+"""
+import argparse, json, shutil
 from pathlib import Path
 import numpy as np
 from datasets import load_dataset
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
+TOK_NAME = "HuggingFaceTB/SmolLM2-360M"
+EOS = 0           # <|endoftext|>; the tokenizer adds no BOS/EOS by itself
+BATCH = 1000      # documents per tokenizer call
 
-def flat_ids(batch):
-    return np.fromiter(itertools.chain.from_iterable(batch["ids"]), dtype=np.int64)
+
+def batches(stream, n):
+    buf = []
+    for ex in stream:
+        buf.append(ex["text"])
+        if len(buf) == n:
+            yield buf
+            buf = []
+    if buf:
+        yield buf
+
+
+def encode_to_bin(stream, tok, n_tokens, path):
+    """Tokenize documents, append EOS to each, write uint16 until n_tokens is reached."""
+    if path.exists():
+        print(f"skip {path.name} (already built)")
+        return
+    tmp = path.with_suffix(".tmp")
+    total = docs = 0
+    bar = tqdm(total=n_tokens, unit="tok", desc=path.name)
+    with open(tmp, "wb") as f:
+        for texts in batches(stream, BATCH):
+            before = total
+            for ids in tok(texts, add_special_tokens=False)["input_ids"]:
+                arr = np.asarray(ids + [EOS], dtype=np.uint16)
+                f.write(arr.tobytes())
+                total += len(arr)
+                docs += 1
+                if total >= n_tokens:
+                    break
+            bar.update(total - before)
+            if total >= n_tokens:
+                break
+    bar.close()
+    tmp.replace(path)              # a half-written file never gets the final name
+    print(f"{path.name}: {total:,} tokens, {docs:,} documents")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", required=True, help="output folder")
-    ap.add_argument("--min_count", type=int, default=5, help="drop tokens rarer than this")
-    ap.add_argument("--max_stories", type=int, default=0, help="0 = all; use e.g. 20000 to test")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--c4_tokens", type=int, default=400_000_000)
+    ap.add_argument("--ts_tokens", type=int, default=170_000_000)
+    ap.add_argument("--val_tokens", type=int, default=5_000_000, help="per domain")
     args = ap.parse_args()
-    out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
 
-    tok = AutoTokenizer.from_pretrained("gpt2")
-    V, eos = tok.vocab_size, tok.eos_token_id
-    ds = load_dataset("roneneldan/TinyStories")
-    if args.max_stories:
-        ds = {k: v.select(range(min(args.max_stories, len(v)))) for k, v in ds.items()}
+    tok = AutoTokenizer.from_pretrained(TOK_NAME)
+    assert tok.eos_token_id == EOS and len(tok) < 65536
 
-    def enc(batch):
-        return {"ids": [x + [eos] for x in tok(batch["text"])["input_ids"]]}
-    ds = {k: v.map(enc, batched=True, remove_columns=v.column_names, num_proc=2)
-          for k, v in ds.items()}
+    def c4(split):
+        return load_dataset("allenai/c4", "en", split=split, streaming=True)
 
-    counts = np.zeros(V, dtype=np.int64)
-    for b in ds["train"].iter(batch_size=10000):
-        counts += np.bincount(flat_ids(b), minlength=V)
+    def ts(split):
+        return load_dataset("roneneldan/TinyStories", split=split, streaming=True)
 
-    keep = np.where((counts >= args.min_count) | (np.arange(V) == eos))[0]
-    unk_id = len(keep)
-    lut = np.full(V, unk_id, dtype=np.int64)
-    lut[keep] = np.arange(len(keep))
-    vocab_size = len(keep) + 1
+    encode_to_bin(c4("train"), tok, args.c4_tokens, out / "c4_train.bin")
+    encode_to_bin(ts("train"), tok, args.ts_tokens, out / "ts_train.bin")
+    encode_to_bin(c4("validation"), tok, args.val_tokens, out / "val_c4.bin")
+    encode_to_bin(ts("validation"), tok, args.val_tokens, out / "val_ts.bin")
 
-    stats = {}
-    for split, name in [("train", "train"), ("validation", "val")]:
-        n = 0
-        with open(out / f"{name}.bin", "wb") as f:
-            for b in ds[split].iter(batch_size=10000):
-                ids = lut[flat_ids(b)].astype(np.uint16)
-                f.write(ids.tobytes()); n += len(ids)
-        stats[name] = n
+    train = out / "train.bin"
+    parts = [out / "c4_train.bin", out / "ts_train.bin"]
+    want = sum(p.stat().st_size for p in parts)
+    if not train.exists() or train.stat().st_size != want:   # stale or partial -> rebuild
+        tmp = train.with_suffix(".tmp")
+        with open(tmp, "wb") as dst:
+            for p in parts:
+                with open(p, "rb") as src:
+                    shutil.copyfileobj(src, dst, 64 * 1024 * 1024)
+        tmp.replace(train)
 
-    json.dump({"gpt2_ids_kept": keep.tolist(), "unk_id": unk_id, "eos_id": int(lut[eos]),
-               "vocab_size": vocab_size, "tokens": stats}, open(out / "vocab.json", "w"))
-    print(f"vocab size: {vocab_size} (from {V}) | tokens: {stats}")
+    names = ["c4_train", "ts_train", "train", "val_c4", "val_ts"]
+    n = {k: (out / f"{k}.bin").stat().st_size // 2 for k in names}
+    meta = {"tokenizer": TOK_NAME, "vocab_size": len(tok), "eos_id": EOS,
+            "dtype": "uint16", "tokens": n,
+            "mix": {"c4": n["c4_train"] / n["train"], "tinystories": n["ts_train"] / n["train"]}}
+    json.dump(meta, open(out / "meta.json", "w"), indent=2)
+    print(json.dumps(meta, indent=2))
+
+    for name in ("train", "val_c4", "val_ts"):     # eyeball check: decoded text should be sane
+        d = np.memmap(out / f"{name}.bin", dtype=np.uint16, mode="r")
+        print(f"\n--- {name}: max id {int(d.max())} | first 100 tokens decoded ---")
+        print(tok.decode(d[:100].astype(np.int64)))
 
 
 if __name__ == "__main__":

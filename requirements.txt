@@ -1,5 +1,7 @@
 transformers
 datasets
 numpy
+pandas
 tqdm
 matplotlib
+pyyaml
