@@ -23,12 +23,17 @@ def get_args():
     ap.add_argument("--eval_windows", type=int, default=1024, help="fixed validation windows per domain")
     ap.add_argument("--save_interval", type=int, default=500)
     ap.add_argument("--seed", type=int, default=1337)
+    ap.add_argument("--teacher", default="", help="teacher model id, e.g. HuggingFaceTB/SmolLM2-360M (empty = baseline)")
+    ap.add_argument("--kd_alpha", type=float, default=0.5, help="KD loss weighting factor")
+    ap.add_argument("--kd_temp", type=float, default=2.0, help="KD softening temperature")
+    ap.add_argument("--kd_chunk", type=int, default=2048, help="row chunk size for KD loss computation")
     return ap.parse_args()
 
 
 def main():
     a = get_args()
     out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True)
+    json.dump(vars(a), open(out / "run_args.json", "w"), indent=2)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_amp = device == "cuda"
     assert a.batch_size % a.grad_accum == 0, "batch_size must be divisible by grad_accum"
@@ -67,6 +72,13 @@ def main():
         [{"params": decay, "weight_decay": a.weight_decay},
          {"params": no_decay, "weight_decay": 0.0}], lr=a.lr, betas=(0.9, 0.95))
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    teacher = None
+    if a.teacher:
+        from distill import load_teacher, teacher_logits, kd_loss
+        teacher = load_teacher(a.teacher, device)
+        t_vocab = getattr(teacher.config, "vocab_size", None)
+        assert t_vocab == cfg.vocab_size, f"Teacher vocab {t_vocab} != student vocab {cfg.vocab_size}"
 
     # ---- resume if a checkpoint exists
     step, best_val = 0, float("inf")
@@ -115,27 +127,47 @@ def main():
     print(f"device={device} params={n_params/1e6:.1f}M vocab={cfg.vocab_size} "
           f"tokens/step={a.batch_size * T} micro_batch={micro} x {a.grad_accum}")
     model.train(); t0 = time.time(); run_sum, run_n = 0.0, 0
+    run_ce, run_kl = 0.0, 0.0
     while step < a.max_steps:
         lr = get_lr(step)
         for g in opt.param_groups: g["lr"] = lr
         opt.zero_grad(set_to_none=True)
         step_loss = 0.0
+        step_ce, step_kl = 0.0, 0.0
         for _ in range(a.grad_accum):
             x, y = train_batch()
-            with torch.autocast(device, dtype=torch.float16, enabled=use_amp):
-                _, loss = model(x, y)
-            scaler.scale(loss / a.grad_accum).backward()
-            step_loss += loss.item() / a.grad_accum
+            if teacher is not None:
+                with torch.autocast(device, dtype=torch.float16, enabled=use_amp):
+                    logits, _ = model(x)
+                    t_logits = teacher_logits(teacher, x)
+                    loss, ce, kl = kd_loss(logits, t_logits, y, a.kd_alpha, a.kd_temp, a.kd_chunk)
+                scaler.scale(loss / a.grad_accum).backward()
+                step_loss += ce.item() / a.grad_accum
+                step_ce += ce.item() / a.grad_accum
+                step_kl += kl.item() / a.grad_accum
+            else:
+                with torch.autocast(device, dtype=torch.float16, enabled=use_amp):
+                    _, loss = model(x, y)
+                scaler.scale(loss / a.grad_accum).backward()
+                step_loss += loss.item() / a.grad_accum
         scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(opt); scaler.update()
         step += 1; run_sum += step_loss; run_n += 1
+        run_ce += step_ce; run_kl += step_kl
 
         if step % 50 == 0:
             dt = time.time() - t0; t0 = time.time()
             ms = dt / 50 * 1000
-            print(f"step {step} | loss {step_loss:.3f} | lr {lr:.2e} | {ms:.0f} ms/step "
-                  f"| projected full run {ms * a.max_steps / 3.6e6:.1f} h")
+            if teacher is not None:
+                mem_gib = torch.cuda.max_memory_allocated() / (1024 ** 3) if device == "cuda" else 0.0
+                print(f"step {step} | loss {step_loss:.3f} | ce {run_ce / 50:.3f} | kl {run_kl / 50:.4f} "
+                      f"| lr {lr:.2e} | {ms:.0f} ms/step | mem {mem_gib:.2f} GiB "
+                      f"| projected full run {ms * a.max_steps / 3.6e6:.1f} h")
+                run_ce, run_kl = 0.0, 0.0
+            else:
+                print(f"step {step} | loss {step_loss:.3f} | lr {lr:.2e} | {ms:.0f} ms/step "
+                      f"| projected full run {ms * a.max_steps / 3.6e6:.1f} h")
         if step % a.eval_interval == 0 or step == a.max_steps:
             r = evaluate(); avg = (r["val_c4"] + r["val_ts"]) / 2
             tr = run_sum / run_n; run_sum, run_n = 0.0, 0
