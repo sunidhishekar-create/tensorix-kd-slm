@@ -224,3 +224,5 @@ data/
 checkpoints/
 *.pt
 *.bin
+apikey.txt
+*.key

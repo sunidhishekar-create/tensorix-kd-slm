@@ -18,9 +18,12 @@ DEFAULT_MODEL = "gemma-4-26b-a4b-it"     # gemma-4-31b-it returned HTTP 500 duri
 SLEEP = time.sleep                        # replaced in tests
 
 
-def make_client():
+def make_client(timeout_s=90):
+    """The request timeout matters: without one, a stalled connection can hang the run forever."""
     from google import genai
-    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    from google.genai import types
+    return genai.Client(api_key=os.environ["GEMINI_API_KEY"],
+                        http_options=types.HttpOptions(timeout=int(timeout_s * 1000)))   # milliseconds
 
 
 def build_config(temperature, thinking, max_tokens=1024):
@@ -67,7 +70,7 @@ def ask(client, model, text, config):
                 SLEEP(60)
                 continue
             if (code is None or code >= 500) and attempt < len(delays):
-                print(f"  server error ({code}), retry in {delays[attempt]} s", flush=True)
+                print(f"  server error ({code or type(e).__name__}), retry in {delays[attempt]} s", flush=True)
                 SLEEP(delays[attempt])
                 attempt += 1
                 continue
@@ -88,6 +91,9 @@ def main():
                     help="raise (for example 4096) when --thinking default is used")
     ap.add_argument("--thinking", choices=["minimal", "default"], default="minimal",
                     help="minimal = thinking off (recommended); default = model's own setting")
+    ap.add_argument("--timeout", type=float, default=90, help="seconds before a stalled request is abandoned")
+    ap.add_argument("--max_consecutive_skips", type=int, default=10,
+                    help="stop the run if this many prompts in a row fail (service probably down)")
     ap.add_argument("--limit", type=int, default=0, help="only process this many prompts (0 = all)")
     a = ap.parse_args()
 
@@ -100,10 +106,10 @@ def main():
     print(f"model {a.model} | prompts {len(rows)} | already done {len(done)} | this run {len(todo)} "
           f"| about {len(todo) / a.rpm:.0f} min at {a.rpm:g} requests/min", flush=True)
 
-    client = make_client()
+    client = make_client(a.timeout)
     config = build_config(a.temperature, a.thinking, a.max_output_tokens)
     interval = 60.0 / a.rpm
-    last_start, made, skipped, stopped_by_quota = 0.0, 0, 0, False
+    last_start, made, skipped, stopped_by_quota, streak = 0.0, 0, 0, False, 0
     for n, row in enumerate(todo, 1):
         if made >= a.daily_limit:
             print(f"daily limit of {a.daily_limit} requests reached for this run.")
@@ -121,7 +127,13 @@ def main():
             break
         if res is None:
             skipped += 1
+            streak += 1
+            if streak >= a.max_consecutive_skips:
+                print(f"{streak} prompts in a row failed: the service looks down. Progress is saved; "
+                      f"rerun later.")
+                break
             continue
+        streak = 0
         if not res["answer"]:                      # empty text: do not save, so a rerun retries it
             print(f"  empty answer for id {row['id']} (finish {res['finish_reason']}, "
                   f"thinking tokens {res['thoughts_tokens']}); not saved", flush=True)
