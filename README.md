@@ -308,3 +308,69 @@ It skips finished pieces on a rerun. Then copy `train.bin`, `val_c4.bin`, `val_t
 3. Gu, Dong, Wei, Huang. MiniLLM: Knowledge Distillation of Large Language Models (2023, ICLR 2024). https://arxiv.org/abs/2306.08543
 4. Hugging Face. SmolLM2 models (teacher and tokenizer): https://huggingface.co/HuggingFaceTB
 5. Datasets: `allenai/c4` (English), `roneneldan/TinyStories`, `databricks/databricks-dolly-15k`.
+
+## Knowledge distillation 
+Knowledge distillation trains the 50.9M student model using soft output probabilities from a frozen `HuggingFaceTB/SmolLM2-360M` teacher alongside standard hard labels. Because student and teacher share the identical 49,152-token SmolLM2 tokenizer, teacher and student logits align directly with zero token mapping, slicing, or vocabulary projection. The training loss combines temperature-scaled forward Kullback-Leibler (KL) divergence with standard student next-token cross-entropy:
+$$\mathcal{L}_{\text{total}} = \alpha T^2 \cdot \text{KL}(p_{\text{teacher}, T} \parallel q_{\text{student}, T}) + (1 - \alpha) \cdot \text{CE}(q_{\text{student}, 1}, y)$$
+All probability distributions and KL divergence terms are computed in `float32`. To stay well within T4 GPU memory limits, a custom chunked autograd function evaluates the analytic gradient during the forward pass over row chunks of 2,048 tokens.
+
+### Flags and training command
+
+Knowledge distillation flags added to `src/train.py` (disabled by default):
+- `--teacher`: teacher Hugging Face model identifier (default: `""`, off)
+- `--kd_temp`: softening temperature $T$ (default: `2.0`)
+- `--kd_alpha`: weighting factor $\alpha$ between KL and cross-entropy (default: `0.5`)
+- `--kd_chunk`: row chunk size to bound peak activation VRAM (default: `2048`)
+
+Exact command for a SHORT tier run at $T=4$ (batch 64, block 256, 5,000 steps):
+
+```bash
+python src/train.py \
+  --data_dir /content/data \
+  --out_dir /content/drive/MyDrive/tensorix/v2/checkpoints/kd_short_T4 \
+  --batch_size 64 \
+  --block_size 256 \
+  --max_steps 5000 \
+  --eval_interval 250 \
+  --save_interval 500 \
+  --teacher HuggingFaceTB/SmolLM2-360M \
+  --kd_alpha 0.5 \
+  --kd_temp 4
+```
+
+### Colab recipe
+
+To execute distillation runs on Google Colab:
+1. Open `notebooks/kd_checks_and_runs.ipynb` on a T4 GPU runtime.
+2. Run **Cell 1 (Setup)** to mount Google Drive, pull repository updates, and copy validation/train data locally to `/content/data`.
+3. In **Cell 6 (KD Training)**, set the two configuration variables:
+   - `KD_T`: temperature value (e.g. `2` or `4`)
+   - `RUN_NAME`: following the project convention `kd_short_T<temperature>` (e.g. `kd_short_T2`, `kd_short_T4`)
+4. Run Cell 6. If disconnected, rerunning Cell 1 and Cell 6 automatically resumes from the latest checkpoint (`ckpt.pt`).
+
+### Measured runtime facts (T4 GPU)
+
+Measured across real training runs on a single Colab T4 GPU:
+- **Step time:** Baseline runs at ~0.51 to 0.56 s/step; KD runs at ~2.0 to 2.2 s/step (~4x compute overhead due to teacher forward pass and chunked distribution calculations).
+- **Peak GPU memory:** 11.21 GiB (comfortably within the 15.0 GiB T4 limit).
+- **Total wall-clock duration:** ~3.1 hours for a full 5,000-step SHORT KD run.
+- **Teacher validation scores:** `python src/distill.py --check_teacher` reproduces the README benchmark scores within tolerance: C4 loss **3.047** and TinyStories loss **1.907**.
+
+### Preliminary results (SHORT Tier, 5,000 steps)
+
+Validation loss and perplexity on the fixed validation windows:
+
+| Run | Steps | Temperature | $\alpha$ | C4 loss | C4 ppl | TinyStories loss | TinyStories ppl | C4 Gap Closed | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| `baseline_short` | 5,000 | N/A | 0.0 | 4.396 | 81.2 | 1.834 | 6.26 | 0.0% (ref) | finished |
+| `kd_short_T2` | 5,000 | 2.0 | 0.5 | 4.121 | **61.6** | 1.843 | 6.31 | **+20.4%** | finished |
+| `kd_short_T4` | 5,000 | 4.0 | 0.5 | — | — | — | — | — | pending |
+| Teacher (SmolLM2-360M) | none | none | none | 3.047 | 21.0 | 1.907 | 6.73 | 100.0% | frozen |
+
+Distillation at $T=2$ closes **20.4%** of the student-to-teacher performance gap on C4 ($4.396 \to 4.121$, reducing perplexity from $81.2$ to $61.6$).
+
+### Honest limitations
+
+- **Domain mismatch on TinyStories:** The teacher's loss on TinyStories (1.907) is actually worse than the student baseline (1.834). Because the teacher was not trained specifically for TinyStories, distilling against its soft targets pulls the student toward an inferior distribution on this domain (yielding TS loss 1.843 vs 1.834). Knowledge distillation is therefore only expected to help on C4.
+- **Compute cost:** The frozen teacher forward pass and soft-target KL calculations increase step time by ~4x (from ~0.53 s/step to ~2.1 s/step).
+- **Single-seed measurements:** All figures reflect a single random seed (`1337`). Confidence intervals and multi-seed variance are not captured.
