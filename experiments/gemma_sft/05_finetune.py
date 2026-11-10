@@ -53,11 +53,14 @@ def main():
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--lr", type=float, default=2e-4)
-    ap.add_argument("--min_lr", type=float, default=2e-5)
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--min_lr", type=float, default=1e-5)
     ap.add_argument("--warmup", type=int, default=20)
     ap.add_argument("--weight_decay", type=float, default=0.01)
     ap.add_argument("--seed", type=int, default=1337)
+    ap.add_argument("--val_n", type=int, default=200,
+                    help="last N training examples held out as a validation set; the epoch with the "
+                         "lowest validation loss is kept (the eval sets are not used for this choice)")
     ap.add_argument("--max_train", type=int, default=0, help="use only the first N training examples (smoke tests)")
     ap.add_argument("--max_eval", type=int, default=0, help="use only the first N examples of each eval set (smoke tests)")
     ap.add_argument("--prompts", default="data/sft/prompts.jsonl", help="for the sample generations")
@@ -77,7 +80,14 @@ def main():
         X, Y = X[:a.max_train], Y[:a.max_train]
     if a.max_eval:
         evals = {n: (ex[:a.max_eval], ey[:a.max_eval]) for n, (ex, ey) in evals.items()}
-    print(f"device={device} | train examples {len(X)} from {a.train} | eval sets {list(evals)}")
+    val_n = min(a.val_n, len(X) // 5)             # same prompts in the same order for both datasets
+    if val_n > 0:
+        Xv, Yv = X[-val_n:], Y[-val_n:]
+        X, Y = X[:-val_n], Y[:-val_n]
+    else:
+        Xv = Yv = None
+    print(f"device={device} | train examples {len(X)} from {a.train} | validation {val_n} "
+          f"| eval sets {list(evals)}")
 
     if a.init == "none":
         model = SLM(ModelConfig()).to(device)
@@ -106,22 +116,24 @@ def main():
         return a.min_lr + 0.5 * (1 + math.cos(math.pi * t)) * (a.lr - a.min_lr)
 
     log_path = out / "log.csv"
-    cols = ["epoch", "train_loss"] + [f"{n}_loss" for n in evals] + [f"{n}_ppl" for n in evals]
+    cols = ["epoch", "train_loss", "val_loss"] + [f"{n}_loss" for n in evals] + [f"{n}_ppl" for n in evals]
     with open(log_path, "w", newline="") as f:
         csv.writer(f).writerow(cols)
 
     def evaluate(epoch, train_loss):
         res = {n: answer_loss(model, ex, ey, device, a.batch_size) for n, (ex, ey) in evals.items()}
+        vloss = answer_loss(model, Xv, Yv, device, a.batch_size) if Xv is not None else float("nan")
         line = " | ".join(f"{n} {v:.3f} (ppl {math.exp(v):.1f})" for n, v in res.items())
-        print(f">>> epoch {epoch} | train {train_loss:.3f} | answer-token loss: {line}", flush=True)
+        print(f">>> epoch {epoch} | train {train_loss:.3f} | val {vloss:.3f} | answer-token loss: {line}",
+              flush=True)
         with open(log_path, "a", newline="") as f:
-            csv.writer(f).writerow([epoch, train_loss] + [res[n] for n in evals]
+            csv.writer(f).writerow([epoch, train_loss, vloss] + [res[n] for n in evals]
                                    + [math.exp(res[n]) for n in evals])
-        return res
+        return res, vloss
 
     evaluate(0, float("nan"))                     # the pretrained model before any fine-tuning
     step = 0
-    final = {}
+    best_val, best_epoch, best_state = float("inf"), 0, None
     for epoch in range(1, a.epochs + 1):
         perm = rng.permutation(len(X))
         run, nb = 0.0, 0
@@ -141,14 +153,23 @@ def main():
             step += 1
             run += loss.item()
             nb += 1
-        final = evaluate(epoch, run / nb)
+        _, vloss = evaluate(epoch, run / nb)
+        if Xv is None or vloss < best_val:         # keep the epoch with the lowest validation loss
+            best_val, best_epoch = vloss, epoch
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+    model.load_state_dict(best_state)
+    print(f"\nselected epoch {best_epoch} (validation loss {best_val:.3f}). Scoring it on the eval sets:")
+    final = {n: answer_loss(model, ex, ey, device, a.batch_size) for n, (ex, ey) in evals.items()}
+    print(" | ".join(f"{n} {v:.3f} (ppl {math.exp(v):.1f})" for n, v in final.items()), flush=True)
 
     torch.save({"model": model.state_dict(), "config": asdict(cfg), "step": step,
-                "source_data": a.train, "init": a.init}, out / "sft.pt")
+                "best_epoch": best_epoch, "source_data": a.train, "init": a.init}, out / "sft.pt")
     json.dump({"train": a.train, "init": a.init, "epochs": a.epochs, "batch_size": a.batch_size,
-               "lr": a.lr, "seed": a.seed, "steps": step, "final_eval_loss": final},
+               "lr": a.lr, "seed": a.seed, "steps": step, "val_n": val_n, "best_epoch": best_epoch,
+               "best_val_loss": best_val, "selected_eval_loss": final},
               open(out / "sft_result.json", "w"), indent=2)
-    print(f"saved {out / 'sft.pt'} after {step} steps")
+    print(f"saved {out / 'sft.pt'} (epoch {best_epoch} of {a.epochs}, {step} steps trained)")
 
     if a.n_samples > 0 and Path(a.prompts).exists():
         from transformers import AutoTokenizer
