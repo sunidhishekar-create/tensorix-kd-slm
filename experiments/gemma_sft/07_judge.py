@@ -43,7 +43,7 @@ def judge_call(client, model, text, config):
     return (r.text or "").strip()
 
 
-def judge_prompt(instruction, context, first, second):
+def judge_prompt(instruction, context, first, second, forced=False):
     ctx = f"\n\nContext given with the instruction:\n{context.strip()}" if (context or "").strip() else ""
     return ("You are judging two answers written by small language models in response to an instruction. "
             "Decide which answer is better: it should follow the instruction, be coherent and relevant, and "
@@ -51,8 +51,11 @@ def judge_prompt(instruction, context, first, second):
             f"Instruction:\n{instruction.strip()}{ctx}\n\n"
             f"Answer A:\n{first.strip() or '(empty)'}\n\n"
             f"Answer B:\n{second.strip() or '(empty)'}\n\n"
-            "Reply with exactly one character: A if answer A is better, B if answer B is better, "
-            "T if they are equally good or equally bad.")
+            + ("Both answers may be poor, but you must still choose the one that is less bad. "
+               "Reply with exactly one character: A if answer A is better, B if answer B is better."
+               if forced else
+               "Reply with exactly one character: A if answer A is better, B if answer B is better, "
+               "T if they are equally good or equally bad."))
 
 
 def parse_verdict(raw):
@@ -111,7 +114,7 @@ def summarize(gens, judgments, pairs):
         for j in judgments:
             if j["pair"] == pair:
                 by_id[j["id"]][j["order"]] = j["verdict"]
-        wins, flips, n_done, per_cat = Counter(), 0, 0, defaultdict(Counter)
+        wins, flips, equal, mixed, n_done, per_cat = Counter(), 0, 0, 0, 0, defaultdict(Counter)
         for pid, d in by_id.items():
             if 1 not in d or 2 not in d:
                 continue
@@ -119,12 +122,18 @@ def summarize(gens, judgments, pairs):
             w = decide(d[1], d[2], x, y)
             wins[w if w else "tie"] += 1
             per_cat[cat.get(pid, "?")][w if w else "tie"] += 1
-            if d[1] in ("A", "B") and d[2] in ("A", "B") and w is None:
-                flips += 1                          # the judge changed its mind when the order changed
+            if w is None:
+                if d[1] == "T" and d[2] == "T":
+                    equal += 1                      # judge said "equal" in both orders
+                elif "T" in (d[1], d[2]):
+                    mixed += 1                      # decisive in one order, "equal" in the other
+                else:
+                    flips += 1                      # chose differently when the order changed (position bias)
         decisive = wins[x] + wins[y]
         leader = x if wins[x] >= wins[y] else y
         out[pair] = {"prompts_judged": n_done, x: wins[x], y: wins[y], "tie": wins["tie"],
-                     "order_flips": flips,
+                     "tie_breakdown": {"equal_in_both_orders": equal, "decisive_in_one_order_only": mixed,
+                                       "order_flips": flips},
                      "win_rate_excluding_ties": round(wins[leader] / decisive, 3) if decisive else None,
                      "leader": leader if decisive else None,
                      "sign_test_p": round(sign_test_p(wins[leader], decisive), 4),
@@ -161,6 +170,8 @@ def main():
     ap.add_argument("--daily_limit", type=int, default=1000)
     ap.add_argument("--timeout", type=float, default=90)
     ap.add_argument("--max_consecutive_skips", type=int, default=10)
+    ap.add_argument("--forced", action="store_true",
+                    help="forced choice: the judge must pick A or B (use with a separate --judgments file)")
     ap.add_argument("--no_api", action="store_true", help="only summarise the cached judgments")
     ap.add_argument("--export_human", type=int, default=0, help="write a blind sheet of N prompts and exit")
     ap.add_argument("--out_dir", default="data/sft")
@@ -196,7 +207,8 @@ def main():
             if wait > 0:
                 SLEEP(wait)
             last = time.time()
-            text = judge_prompt(g["instruction"], g["context"], g["answers"][first], g["answers"][second])
+            text = judge_prompt(g["instruction"], g["context"], g["answers"][first], g["answers"][second],
+                                forced=a.forced)
             raw = ask(client, a.judge_model, text, config)
             if raw == "QUOTA":
                 print("quota reached (repeated 429). Progress is saved: rerun later.")
@@ -218,7 +230,8 @@ def main():
 
     summary = summarize(gens, read_jsonl(a.judgments), a.pairs)
     Path(a.out_dir).mkdir(parents=True, exist_ok=True)
-    json.dump({"judge": a.judge_model, "pairs": summary}, open(Path(a.out_dir) / "judge_summary.json", "w"),
+    summary_path = Path(a.judgments).with_name(Path(a.judgments).stem + "_summary.json")
+    json.dump({"judge": a.judge_model, "forced_choice": a.forced, "pairs": summary}, open(summary_path, "w"),
               indent=2)
     print(json.dumps(summary, indent=2))
 
