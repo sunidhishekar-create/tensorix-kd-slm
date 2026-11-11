@@ -1,0 +1,98 @@
+{
+  "judge": "gemma-4-26b-a4b-it",
+  "forced_choice": true,
+  "pairs": {
+    "human:pretrained": {
+      "prompts_judged": 100,
+      "human": 68,
+      "pretrained": 10,
+      "tie": 22,
+      "tie_breakdown": {
+        "equal_in_both_orders": 0,
+        "decisive_in_one_order_only": 0,
+        "order_flips": 22
+      },
+      "win_rate_excluding_ties": 0.872,
+      "leader": "human",
+      "sign_test_p": 0.0,
+      "by_category": {
+        "brainstorming": {
+          "human": 12,
+          "tie": 4,
+          "pretrained": 1
+        },
+        "classification": {
+          "human": 14,
+          "tie": 6,
+          "pretrained": 1
+        },
+        "closed_qa": {
+          "pretrained": 1,
+          "human": 3,
+          "tie": 1
+        },
+        "creative_writing": {
+          "pretrained": 2,
+          "tie": 1,
+          "human": 4
+        },
+        "general_qa": {
+          "human": 15,
+          "tie": 4
+        },
+        "open_qa": {
+          "human": 18,
+          "pretrained": 5,
+          "tie": 6
+        },
+        "summarization": {
+          "human": 2
+        }
+      }
+    },
+    "gemma:pretrained": {
+      "prompts_judged": 100,
+      "gemma": 84,
+      "pretrained": 3,
+      "tie": 13,
+      "tie_breakdown": {
+        "equal_in_both_orders": 0,
+        "decisive_in_one_order_only": 0,
+        "order_flips": 13
+      },
+      "win_rate_excluding_ties": 0.966,
+      "leader": "gemma",
+      "sign_test_p": 0.0,
+      "by_category": {
+        "brainstorming": {
+          "gemma": 15,
+          "tie": 2
+        },
+        "classification": {
+          "gemma": 20,
+          "tie": 1
+        },
+        "closed_qa": {
+          "tie": 1,
+          "gemma": 4
+        },
+        "creative_writing": {
+          "pretrained": 2,
+          "gemma": 5
+        },
+        "general_qa": {
+          "tie": 3,
+          "gemma": 15,
+          "pretrained": 1
+        },
+        "open_qa": {
+          "gemma": 23,
+          "tie": 6
+        },
+        "summarization": {
+          "gemma": 2
+        }
+      }
+    }
+  }
+}
