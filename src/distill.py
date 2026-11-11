@@ -181,6 +181,7 @@ class KDLossFunction(torch.autograd.Function):
         ctx.student_shape = orig_shape
         ctx.student_dtype = student_logits.dtype
 
+        # Kept on purpose: this exact code produced kd_short_T2 and kd_short_T4 (verified on a T4); change only together with a GPU re-run of --selftest.
         total_loss = torch.tensor(total_val, dtype=calc_dtype, device=student_logits.device, requires_grad=True)
         ce_tensor = torch.tensor(mean_ce, dtype=calc_dtype, device=student_logits.device)
         kl_tensor = torch.tensor(mean_kl, dtype=calc_dtype, device=student_logits.device)
