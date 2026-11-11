@@ -309,7 +309,8 @@ It skips finished pieces on a rerun. Then copy `train.bin`, `val_c4.bin`, `val_t
 4. Hugging Face. SmolLM2 models (teacher and tokenizer): https://huggingface.co/HuggingFaceTB
 5. Datasets: `allenai/c4` (English), `roneneldan/TinyStories`, `databricks/databricks-dolly-15k`.
 
-## Knowledge distillation 
+## Knowledge distillation
+
 Knowledge distillation trains the 50.9M student model using soft output probabilities from a frozen `HuggingFaceTB/SmolLM2-360M` teacher alongside standard hard labels. Because student and teacher share the identical 49,152-token SmolLM2 tokenizer, teacher and student logits align directly with zero token mapping, slicing, or vocabulary projection. The training loss combines temperature-scaled forward Kullback-Leibler (KL) divergence with standard student next-token cross-entropy:
 $$\mathcal{L}_{\text{total}} = \alpha T^2 \cdot \text{KL}(p_{\text{teacher}, T} \parallel q_{\text{student}, T}) + (1 - \alpha) \cdot \text{CE}(q_{\text{student}, 1}, y)$$
 All probability distributions and KL divergence terms are computed in `float32`. To stay well within T4 GPU memory limits, a custom chunked autograd function evaluates the analytic gradient during the forward pass over row chunks of 2,048 tokens.
@@ -351,26 +352,50 @@ To execute distillation runs on Google Colab:
 ### Measured runtime facts (T4 GPU)
 
 Measured across real training runs on a single Colab T4 GPU:
-- **Step time:** Baseline runs at ~0.51 to 0.56 s/step; KD runs at ~2.0 to 2.2 s/step (~4x compute overhead due to teacher forward pass and chunked distribution calculations).
-- **Peak GPU memory:** 11.21 GiB (comfortably within the 15.0 GiB T4 limit).
-- **Total wall-clock duration:** ~3.1 hours for a full 5,000-step SHORT KD run.
-- **Teacher validation scores:** `python src/distill.py --check_teacher` reproduces the README benchmark scores within tolerance: C4 loss **3.047** and TinyStories loss **1.907**.
+- **Speed:** Baseline about 0.51 to 0.56 s/step (~514–556 ms/step); KD about 2.0 to 2.3 s/step ($T=2$ about 2.0–2.2 s/step, $T=4$ resumed session about 2.28 s/step).
+- **Peak GPU memory:** 11.21 GiB ($T=2$) and 11.40 GiB ($T=4$ resumed session), well within the 15.0 GiB T4 limit.
+- **Wall-clock time:** About 3.1 to 3.4 h per SHORT KD run (5,000 steps) on a T4.
+- **Teacher validation scores:** `python src/distill.py --check_teacher` reproduces the README benchmark scores within tolerance: C4 loss **3.047** (ppl 21.0) and TinyStories loss **1.907** (ppl 6.73).
 
-### Preliminary results (SHORT Tier, 5,000 steps)
+### Results (SHORT Tier, 5,000 steps, $\alpha = 0.5$, seed 1337)
 
 Validation loss and perplexity on the fixed validation windows:
 
-| Run | Steps | Temperature | $\alpha$ | C4 loss | C4 ppl | TinyStories loss | TinyStories ppl | C4 Gap Closed | Status |
-|---|---|---|---|---|---|---|---|---|---|
-| `baseline_short` | 5,000 | N/A | 0.0 | 4.396 | 81.2 | 1.834 | 6.26 | 0.0% (ref) | finished |
-| `kd_short_T2` | 5,000 | 2.0 | 0.5 | 4.121 | **61.6** | 1.843 | 6.31 | **+20.4%** | finished |
-| `kd_short_T4` | 5,000 | 4.0 | 0.5 | — | — | — | — | — | pending |
-| Teacher (SmolLM2-360M) | none | none | none | 3.047 | 21.0 | 1.907 | 6.73 | 100.0% | frozen |
+| Run | T | $\alpha$ | Steps | C4 loss / ppl | TinyStories loss / ppl | Gap closed on C4 |
+|---|---|---|---|---|---|---|
+| `baseline_short` | — | 0.0 | 5,000 | 4.3964 / 81.2 | 1.8342 / 6.26 | 0.0% (ref) |
+| `kd_short_T2` | 2 | 0.5 | 5,000 | 4.1207 / 61.6 | 1.8425 / 6.31 | 0.204 (20.4%) |
+| `kd_short_T4` | 4 | 0.5 | 5,000 | 4.1571 / 63.9 | 1.8314 / 6.24 | 0.177 (17.7%) |
+| Teacher SmolLM2-360M (frozen) | none | none | none | 3.047 / 21.0 | 1.907 / 6.73 | 1.000 (100.0%) |
 
-Distillation at $T=2$ closes **20.4%** of the student-to-teacher performance gap on C4 ($4.396 \to 4.121$, reducing perplexity from $81.2$ to $61.6$).
+- **Retention metric:** $\text{Gap closed} = (\text{loss}_{\text{baseline}} - \text{loss}_{\text{distilled}}) / (\text{loss}_{\text{baseline}} - \text{loss}_{\text{teacher}})$, computed on C4 only.
+- **Temperature comparison:** $T=2$ is the best of the two tested temperatures on C4 (loss 4.1207 vs 4.1571; ppl -24.1% vs -21.3%) and on average validation loss (2.9816 vs 2.9943). The differences between $T=2$ and $T=4$ are small and from a single seed.
+- **Consistency check:** `evaluate.py` output for `kd_short_T2` and `kd_short_T4` matches the last row of their `log.csv` to 4 decimal places; `best.pt` is the final step (5,000) for all three runs.
 
-### Honest limitations
+### Evaluation interval and checkpoint selection
 
-- **Domain mismatch on TinyStories:** The teacher's loss on TinyStories (1.907) is actually worse than the student baseline (1.834). Because the teacher was not trained specifically for TinyStories, distilling against its soft targets pulls the student toward an inferior distribution on this domain (yielding TS loss 1.843 vs 1.834). Knowledge distillation is therefore only expected to help on C4.
-- **Compute cost:** The frozen teacher forward pass and soft-target KL calculations increase step time by ~4x (from ~0.53 s/step to ~2.1 s/step).
-- **Single-seed measurements:** All figures reflect a single random seed (`1337`). Confidence intervals and multi-seed variance are not captured.
+A check using `src/compare_runs.py` confirms optimal step alignment:
+
+```
+Run 'baseline_short': Best Step (All) = 5000 | Best Step (500s) = 5000 | Last Step = 5000
+Run 'kd_short_T2': Best Step (All) = 5000 | Best Step (500s) = 5000 | Last Step = 5000
+Run 'kd_short_T4': Best Step (All) = 5000 | Best Step (500s) = 5000 | Last Step = 5000
+```
+
+The logs of baseline_short, kd_short_T2 and kd_short_T4 all contain 20 evaluation rows at 250-step spacing (baseline_short has one duplicated row from a resume), so the evaluation interval was the same for all three runs. The best validation step (lowest val_avg) is the final step, 5,000, for all three, so best.pt holds the step-5,000 model in each case and checkpoint selection is not affected by evaluation frequency.
+
+### Limitations
+
+- **Single seed:** All figures reflect a single random seed (`1337`). Confidence intervals across multiple seeds were not run under the training budget.
+- **Gain is on C4 only:** Distillation closes up to 20.4% of the student-to-teacher gap on C4; TinyStories shows no clear change: perplexity +0.8% (T=2) and -0.3% (T=4), from a single seed.
+- **TinyStories domain mismatch:** On TinyStories, the teacher (loss 1.907) is worse than the student baseline (1.834). Distilling against its soft targets pulls the student toward a slightly worse distribution on story generation (1.8425 for $T=2$, 1.8314 for $T=4$).
+- **Compute overhead:** KD costs about 4x per step (~2.0–2.3 s/step vs ~0.53 s/step for baseline), paying for the teacher forward pass and soft-target calculations.
+- **Resumed training:** `kd_short_T4` was run across two Colab sessions (resumed from its step-2500 checkpoint).
+- **Transient NaN in log print:** In the $T=4$ resumed session, the printed 50-step average KL was `nan` once at step 2950, while `ce` and `loss` stayed finite and KL returned to normal at step 3000 (cause not identified; a possible cause is a transient fp16 teacher overflow, in which case GradScaler would skip that optimizer update; effect believed negligible but not proven).
+- **KL not comparable across temperatures:** Printed KL divergence values are not directly comparable across temperatures, as higher temperatures produce softer/flatter distributions which naturally yield smaller numerical KL values.
+
+### Files and artifacts
+
+- `src/distill.py`: Teacher loading, forward inference, and memory-efficient chunked autograd loss function.
+- `src/compare_runs.py`: Multi-run comparison table and log-scale perplexity plotting script.
+- `results/kd/`: Holds the three `log.csv` copies (`baseline_short_log.csv`, `kd_short_T2_log.csv`, `kd_short_T4_log.csv`), `best_step_check.txt`, `results_table.md`, `val_ppl_compare.png`, and the `evaluate.py` JSONs for `kd_short_T2` and `kd_short_T4`.
