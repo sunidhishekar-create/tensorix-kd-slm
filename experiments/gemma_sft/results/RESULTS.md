@@ -44,9 +44,13 @@ The judge sees two answers without model names, once in each order. A model wins
 
 | Pair | Prompts | First model wins | Second model wins | Ties | Win rate of leader (excl. ties) | 95% interval | Sign-test p |
 |---|---|---|---|---|---|---|---|
-| B (Gemma answers) vs pretrained (no fine-tuning) | 100 | 84 | 3 | 13 | 96.6% (gemma) | 90% to 99% | 0.000 |
-| A (human answers) vs pretrained (no fine-tuning) | 100 | 68 | 10 | 22 | 87.2% (human) | 78% to 93% | 0.000 |
+| B (Gemma answers) vs pretrained (no fine-tuning) | 100 | 84 | 3 | 13 | 96.6% (gemma) | 90% to 99% | < 0.001 |
+| A (human answers) vs pretrained (no fine-tuning) | 100 | 68 | 10 | 22 | 87.2% (human) | 78% to 93% | < 0.001 |
 
 ## 4. Human check
 
 Not available: no filled sheets named `human_check_<rater>.csv` found in `data\sft`.
+
+## 5. Settings
+
+Decoding: temperature 0.7, top-k 40, up to 100 new tokens, seed 0 per prompt (identical for every model).

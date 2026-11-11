@@ -1,0 +1,12 @@
+{
+  "models": [
+    "pretrained=/content/drive/MyDrive/tensorix/v2/checkpoints/baseline_full/best.pt",
+    "human=/content/drive/MyDrive/tensorix/v2/sft/sft_human_v2/sft.pt",
+    "gemma=/content/drive/MyDrive/tensorix/v2/sft/sft_gemma_v2/sft.pt"
+  ],
+  "temperature": 0.7,
+  "top_k": 40,
+  "max_new_tokens": 100,
+  "seed": 0,
+  "n_prompts": 300
+}
