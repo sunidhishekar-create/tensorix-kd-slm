@@ -73,6 +73,10 @@ def judged(path):
     return out
 
 
+def fmt_p(p):
+    return "< 0.001" if p < 0.001 else f"{p:.3f}"
+
+
 def pct(v):
     return "n/a" if v is None else f"{100 * v:.1f}%"
 
@@ -149,7 +153,7 @@ def section_judge(title, path, gens):
         lines.append(f"| {LABEL.get(x, x)} vs {LABEL.get(y, y)} | {len(d)} | {wx} | {wy} | {tie} | "
                      f"{pct(k / dec) if dec else 'n/a'} ({leader if dec else '-'}) | "
                      f"{'n/a' if ci is None else f'{100 * ci[0]:.0f}% to {100 * ci[1]:.0f}%'} | "
-                     f"{sign_test_p(k, dec):.3f} |")
+                     f"{fmt_p(sign_test_p(k, dec))} |")
     return lines + [""]
 
 
