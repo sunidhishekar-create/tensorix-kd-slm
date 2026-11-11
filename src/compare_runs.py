@@ -4,6 +4,8 @@ Lightweight, CPU-only analysis utility:
 - Parses log.csv files from one or more root directories.
 - Computes relative perplexity changes vs baseline.
 - Computes percentage of teacher quality gap closed on C4.
+- Identifies best step (argmin of val_avg) across all rows and multiples of 500.
+- Optional filtering with --every N to inspect checkpoints on regular step intervals.
 - Generates publication-ready validation perplexity curves on a log y-axis.
 - Outputs Markdown summary table.
 
@@ -23,11 +25,11 @@ import matplotlib.pyplot as plt
 
 def parse_log_csv(file_path: Path):
     """
-    Reads log.csv and extracts full curve history and last row data.
+    Reads log.csv and extracts full curve history and all row records.
     Expected columns: step, train_loss, val_c4, val_ts, val_avg, ppl_c4, ppl_ts, lr
     """
     history = {"steps": [], "ppl_c4": [], "ppl_ts": []}
-    last_row = None
+    all_rows = []
 
     with open(file_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -39,7 +41,7 @@ def parse_log_csv(file_path: Path):
                 history["steps"].append(step)
                 history["ppl_c4"].append(ppl_c4)
                 history["ppl_ts"].append(ppl_ts)
-                last_row = {
+                all_rows.append({
                     "step": step,
                     "train_loss": float(row["train_loss"]),
                     "val_c4": float(row["val_c4"]),
@@ -48,12 +50,12 @@ def parse_log_csv(file_path: Path):
                     "ppl_c4": ppl_c4,
                     "ppl_ts": ppl_ts,
                     "lr": float(row["lr"]),
-                }
+                })
             except (ValueError, KeyError) as e:
                 print(f"[WARN] Skipping malformed line in {file_path}: {e}")
                 continue
 
-    return history, last_row
+    return history, all_rows
 
 
 def find_run_log(roots, run_name: str):
@@ -130,10 +132,10 @@ def plot_comparison_curves(runs_data: dict, out_file: Path):
     print(f"[OK] Saved comparison curves to: {out_file}")
 
 
-def generate_markdown_table(runs_data: dict, baseline_name: str, teacher_c4: float = None):
+def generate_markdown_table(runs_data: dict, baseline_name: str, teacher_c4: float = None, every: int = 0):
     """
-    Constructs a markdown table summarizing final results, relative changes,
-    and gap closed on C4. Warns on step mismatch.
+    Constructs a markdown table summarizing final/filtered results, relative changes,
+    best steps, and gap closed on C4. Emits warnings for step mismatches and non-monotonic optima.
     """
     has_teacher_c4 = teacher_c4 is not None
     base_data = runs_data.get(baseline_name, None)
@@ -144,8 +146,14 @@ def generate_markdown_table(runs_data: dict, baseline_name: str, teacher_c4: flo
     base_ts_loss = None
     base_ts_ppl = None
 
-    if base_data and base_data.get("last_row"):
-        b_row = base_data["last_row"]
+    if base_data and base_data.get("all_rows"):
+        b_rows = base_data["all_rows"]
+        if every > 0:
+            b_filt = [r for r in b_rows if r["step"] % every == 0]
+            b_row = b_filt[-1] if b_filt else b_rows[-1]
+        else:
+            b_row = b_rows[-1]
+
         base_last_step = b_row["step"]
         base_c4_loss = b_row["val_c4"]
         base_c4_ppl = b_row["ppl_c4"]
@@ -156,6 +164,8 @@ def generate_markdown_table(runs_data: dict, baseline_name: str, teacher_c4: flo
     headers = [
         "Run",
         "Last Step",
+        "Best Step (All)",
+        "Best Step (500s)",
         "C4 Loss",
         "C4 PPL",
         "TS Loss",
@@ -173,9 +183,34 @@ def generate_markdown_table(runs_data: dict, baseline_name: str, teacher_c4: flo
     warnings = []
 
     for run_name, data in runs_data.items():
-        row = data.get("last_row")
-        if not row:
+        all_rows = data.get("all_rows", [])
+        if not all_rows:
             continue
+
+        # Find best step among ALL rows (argmin of val_avg)
+        best_row_all = min(all_rows, key=lambda r: r["val_avg"])
+        best_step_all = best_row_all["step"]
+
+        # Find best step among rows that are multiples of 500
+        rows_500 = [r for r in all_rows if r["step"] % 500 == 0]
+        if rows_500:
+            best_row_500 = min(rows_500, key=lambda r: r["val_avg"])
+            best_step_500 = best_row_500["step"]
+            best_step_500_str = str(best_step_500)
+        else:
+            best_step_500 = None
+            best_step_500_str = "N/A"
+
+        # Filter rows for the table if --every N is set
+        if every > 0:
+            filt_rows = [r for r in all_rows if r["step"] % every == 0]
+            if not filt_rows:
+                print(f"[WARN] Run '{run_name}' has no rows where step % {every} == 0. Using last available row.")
+                row = all_rows[-1]
+            else:
+                row = filt_rows[-1]
+        else:
+            row = all_rows[-1]
 
         step = row["step"]
         c4_loss = row["val_c4"]
@@ -183,7 +218,19 @@ def generate_markdown_table(runs_data: dict, baseline_name: str, teacher_c4: flo
         ts_loss = row["val_ts"]
         ts_ppl = row["ppl_ts"]
 
-        # Check step alignment with baseline
+        # Warning 1: best step among all rows differs from best step at 500 multiples
+        if best_step_500 is not None and best_step_all != best_step_500:
+            warnings.append(
+                f"[WARN] Run '{run_name}': best step among all rows ({best_step_all}) differs from best step at multiples of 500 ({best_step_500})."
+            )
+
+        # Warning 2: best step differs from last step (potential overfitting or plateau)
+        if best_step_all != step:
+            warnings.append(
+                f"[WARN] Run '{run_name}': best step ({best_step_all}) differs from last step ({step})."
+            )
+
+        # Warning 3: Check step alignment with baseline
         step_str = str(step)
         if base_last_step is not None and step != base_last_step:
             step_str += " *"
@@ -224,6 +271,8 @@ def generate_markdown_table(runs_data: dict, baseline_name: str, teacher_c4: flo
         cols = [
             f"`{run_name}`",
             step_str,
+            str(best_step_all),
+            best_step_500_str,
             f"{c4_loss:.4f}",
             f"{c4_ppl:.2f}",
             f"{ts_loss:.4f}",
@@ -267,6 +316,12 @@ def main():
         help="Teacher C4 validation loss (e.g. 3.047) to compute retention gap closed",
     )
     parser.add_argument(
+        "--every",
+        type=int,
+        default=0,
+        help="When set (> 0), only use log.csv rows whose step is a multiple of N for the table (default: 0 = all rows)",
+    )
+    parser.add_argument(
         "--out",
         default="results",
         help="Directory to save comparison plot and table (default: results)",
@@ -290,8 +345,8 @@ def main():
             missing_runs.append(run)
             continue
 
-        history, last_row = parse_log_csv(log_path)
-        if not history["steps"] or last_row is None:
+        history, all_rows = parse_log_csv(log_path)
+        if not history["steps"] or not all_rows:
             print(f"[WARN] Run '{run}' log file at '{log_path}' contains no valid rows. Skipping.")
             missing_runs.append(run)
             continue
@@ -299,7 +354,7 @@ def main():
         runs_data[run] = {
             "path": log_path,
             "history": history,
-            "last_row": last_row,
+            "all_rows": all_rows,
         }
 
     if not runs_data:
@@ -307,16 +362,16 @@ def main():
         sys.exit(1)
 
     # Generate Markdown Table
-    table_md, warnings = generate_markdown_table(runs_data, args.baseline, args.teacher_c4)
+    table_md, warnings = generate_markdown_table(runs_data, args.baseline, args.teacher_c4, args.every)
 
     # Print Warnings if any
     for w in warnings:
         print(w)
 
     # Print table to stdout
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 90)
     print("RESULTS COMPARISON TABLE")
-    print("=" * 80)
+    print("=" * 90)
     print(table_md)
 
     # Save Markdown Table
@@ -331,4 +386,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

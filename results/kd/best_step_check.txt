@@ -1,0 +1,3 @@
+Run 'baseline_short': Best Step (All) = 5000 | Best Step (500s) = 5000 | Last Step = 5000
+Run 'kd_short_T2': Best Step (All) = 5000 | Best Step (500s) = 5000 | Last Step = 5000
+Run 'kd_short_T4': Best Step (All) = 5000 | Best Step (500s) = 5000 | Last Step = 5000
