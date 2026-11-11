@@ -1,0 +1,19 @@
+{
+  "max_len": 256,
+  "splits": {
+    "train": {
+      "prompts_with_gemma_answer": 3000,
+      "kept": 2990,
+      "dropped_too_long": 10,
+      "mean_answer_tokens_human": 58.0,
+      "mean_answer_tokens_gemma": 67.5
+    },
+    "eval": {
+      "prompts_with_gemma_answer": 300,
+      "kept": 300,
+      "dropped_too_long": 0,
+      "mean_answer_tokens_human": 58.8,
+      "mean_answer_tokens_gemma": 71.0
+    }
+  }
+}
