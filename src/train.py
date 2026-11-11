@@ -33,7 +33,20 @@ def get_args():
 def main():
     a = get_args()
     out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True)
-    json.dump(vars(a), open(out / "run_args.json", "w"), indent=2)
+    run_args_path = out / "run_args.json"
+    curr_args = vars(a)
+    if not run_args_path.exists():
+        json.dump(curr_args, open(run_args_path, "w"), indent=2)
+    else:
+        try:
+            prev_args = json.load(open(run_args_path))
+            all_keys = set(prev_args.keys()) | set(curr_args.keys())
+            diffs = [f"{k}: {prev_args.get(k)} -> {curr_args.get(k)}" for k in sorted(all_keys) if prev_args.get(k) != curr_args.get(k)]
+            if diffs:
+                print(f"[WARN] Resuming run with differing arguments: {', '.join(diffs)}")
+                json.dump(curr_args, open(out / "run_args_resume.json", "w"), indent=2)
+        except Exception as e:
+            print(f"[WARN] Could not parse existing run_args.json: {e}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_amp = device == "cuda"
     assert a.batch_size % a.grad_accum == 0, "batch_size must be divisible by grad_accum"
