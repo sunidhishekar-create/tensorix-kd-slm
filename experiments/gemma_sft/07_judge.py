@@ -172,6 +172,7 @@ def main():
     ap.add_argument("--max_consecutive_skips", type=int, default=10)
     ap.add_argument("--forced", action="store_true",
                     help="forced choice: the judge must pick A or B (use with a separate --judgments file)")
+    ap.add_argument("--n", type=int, default=0, help="only judge the first N prompts (0 = all)")
     ap.add_argument("--no_api", action="store_true", help="only summarise the cached judgments")
     ap.add_argument("--export_human", type=int, default=0, help="write a blind sheet of N prompts and exit")
     ap.add_argument("--out_dir", default="data/sft")
@@ -179,6 +180,8 @@ def main():
 
     gens = read_jsonl(a.gens)
     assert gens, f"no generations in {a.gens}"
+    if a.n:
+        gens = gens[:a.n]
     if a.export_human:
         export_human(gens, a.pairs, a.export_human, a.out_dir)
         return

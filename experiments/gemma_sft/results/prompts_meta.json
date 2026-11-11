@@ -1,0 +1,31 @@
+{
+  "source": "databricks/databricks-dolly-15k",
+  "seed": 0,
+  "max_len": 256,
+  "max_prompt_tokens": 160,
+  "eligible": 10922,
+  "n_train": 3000,
+  "n_eval": 300,
+  "categories": {
+    "train": {
+      "information_extraction": 78,
+      "classification": 572,
+      "open_qa": 1047,
+      "general_qa": 498,
+      "brainstorming": 450,
+      "closed_qa": 149,
+      "creative_writing": 127,
+      "summarization": 79
+    },
+    "eval": {
+      "open_qa": 101,
+      "closed_qa": 11,
+      "brainstorming": 48,
+      "classification": 54,
+      "general_qa": 52,
+      "creative_writing": 18,
+      "summarization": 9,
+      "information_extraction": 7
+    }
+  }
+}

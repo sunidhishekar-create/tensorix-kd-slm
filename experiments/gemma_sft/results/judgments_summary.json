@@ -1,0 +1,56 @@
+{
+  "judge": "gemma-4-26b-a4b-it",
+  "forced_choice": false,
+  "pairs": {
+    "human:gemma": {
+      "prompts_judged": 300,
+      "human": 10,
+      "gemma": 11,
+      "tie": 279,
+      "tie_breakdown": {
+        "equal_in_both_orders": 261,
+        "decisive_in_one_order_only": 18,
+        "order_flips": 0
+      },
+      "win_rate_excluding_ties": 0.524,
+      "leader": "gemma",
+      "sign_test_p": 1.0,
+      "by_category": {
+        "brainstorming": {
+          "tie": 48
+        },
+        "classification": {
+          "tie": 47,
+          "gemma": 3,
+          "human": 4
+        },
+        "closed_qa": {
+          "tie": 7,
+          "gemma": 3,
+          "human": 1
+        },
+        "creative_writing": {
+          "tie": 18
+        },
+        "general_qa": {
+          "tie": 48,
+          "gemma": 3,
+          "human": 1
+        },
+        "information_extraction": {
+          "tie": 6,
+          "human": 1
+        },
+        "open_qa": {
+          "tie": 97,
+          "human": 2,
+          "gemma": 2
+        },
+        "summarization": {
+          "tie": 8,
+          "human": 1
+        }
+      }
+    }
+  }
+}

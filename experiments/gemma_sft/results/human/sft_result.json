@@ -1,0 +1,16 @@
+{
+  "train": "/content/sft/human_train.npz",
+  "init": "/content/drive/MyDrive/tensorix/v2/checkpoints/baseline_full/best.pt",
+  "epochs": 3,
+  "batch_size": 16,
+  "lr": 0.0001,
+  "seed": 1337,
+  "steps": 525,
+  "val_n": 200,
+  "best_epoch": 1,
+  "best_val_loss": 3.5646839670672863,
+  "selected_eval_loss": {
+    "human_eval": 3.6892574285411786,
+    "gemma_eval": 3.953986000193794
+  }
+}
