@@ -1,0 +1,19 @@
+{
+  "name": "kd_short_T2",
+  "device": "cuda",
+  "block_size": 256,
+  "eval_windows": 1024,
+  "gpu": "Tesla T4",
+  "kind": "student",
+  "source": "/content/drive/MyDrive/tensorix/v2/checkpoints/kd_short_T2/best.pt",
+  "step": 5000,
+  "params_m": 50.86,
+  "weights_fp16_mb": 101.7,
+  "val_c4_loss": 4.1207,
+  "val_c4_ppl": 61.605,
+  "val_ts_loss": 1.8425,
+  "val_ts_ppl": 6.312,
+  "val_avg_loss": 2.9816,
+  "latency_ms_1x256": 12.37,
+  "peak_mem_mb": 138.5
+}

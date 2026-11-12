@@ -1,0 +1,12 @@
+{
+  "models": [
+    "sft_base_short=/content/drive/MyDrive/tensorix_own_runs/sft_dolly_baseline_short_v2/best.pt",
+    "sft_kd_T2=/content/drive/MyDrive/tensorix/v2/checkpoints/sft_dolly_kd_short_T2_v1/best.pt",
+    "sft_base_full=/content/drive/MyDrive/tensorix/v2/checkpoints/sft_dolly_baseline_v3/best.pt"
+  ],
+  "temperature": 0.7,
+  "top_k": 40,
+  "max_new_tokens": 120,
+  "seed": 0,
+  "n_prompts": 300
+}

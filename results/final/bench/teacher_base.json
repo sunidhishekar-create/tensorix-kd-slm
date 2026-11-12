@@ -1,0 +1,27 @@
+{
+  "name": "teacher_base",
+  "device": "cuda",
+  "block_size": 256,
+  "limit": 0,
+  "scoring": "sum log p(choice | question); acc_norm divides by choice length in characters",
+  "kind": "hf_model",
+  "source": "HuggingFaceTB/SmolLM2-360M",
+  "tasks": {
+    "hellaswag": {
+      "n": 10042,
+      "acc": 0.4316,
+      "acc_stderr": 0.0049,
+      "acc_norm": 0.564,
+      "acc_norm_stderr": 0.0049,
+      "chance": 0.25
+    },
+    "arc_easy": {
+      "n": 2376,
+      "acc": 0.7033,
+      "acc_stderr": 0.0094,
+      "acc_norm": 0.6936,
+      "acc_norm_stderr": 0.0095,
+      "chance": 0.2502
+    }
+  }
+}
