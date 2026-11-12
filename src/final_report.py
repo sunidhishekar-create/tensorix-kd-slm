@@ -347,10 +347,9 @@ def section_bench(bench_dirs, md, metrics, out):
         ax.invert_yaxis()
         chance = b[ks[0]]["tasks"][t]["chance"] * 100
         ax.axvline(chance, color=MUTED, linestyle=":", linewidth=1.2)
-        ax.text(chance, -0.7, f" chance {chance:.0f}%", fontsize=8, color=MUTED, va="bottom")
         for i, v in enumerate(vals):
             ax.text(v + errs[i], i, f"  {v:.1f}%", va="center", fontsize=9, color=INK)
-        style(ax, f"{t} (acc_norm)", "accuracy (%)")
+        style(ax, f"{t} (acc_norm)", f"accuracy (%), dotted line = chance ({chance:.0f}%)")
         ax.grid(axis="y", visible=False)
         ax.grid(axis="x", color=GRID, linewidth=0.8)
         ax.set_xlim(0, max(vals) * 1.25)
@@ -444,20 +443,26 @@ def section_judge(judge_files, md, metrics, out):
     md.append("")
     metrics["pairwise"] = [{k: v for k, v in r.items()} for r in rows]
 
-    fig, ax = plt.subplots(figsize=(10, 0.75 * len(rows) + 1.6))
+    fig, ax = plt.subplots(figsize=(10, 0.75 * len(rows) + 2.0))
+    legend = {}
     for i, r in enumerate(rows):
         n = r["n"] or 1
-        segs = [(r["wx"] / n, colour(r["x"]), f"{label(r['x'])} {r['wx']}"),
-                (r["tie"] / n, TIE_GREY, f"tie {r['tie']}"),
-                (r["wy"] / n, colour(r["y"]), f"{label(r['y'])} {r['wy']}")]
+        segs = [(r["wx"] / n, colour(r["x"]), r["wx"], f"{label(r['x'])} wins"),
+                (r["tie"] / n, TIE_GREY, r["tie"], "tie (order flip)"),
+                (r["wy"] / n, colour(r["y"]), r["wy"], f"{label(r['y'])} wins")]
         left = 0
-        for w, c, t in segs:
-            ax.barh(i, w * 100, left=left * 100, color=c, height=0.55, edgecolor="white", linewidth=2)
-            if w > 0.08:
-                ax.text((left + w / 2) * 100, i, t, ha="center", va="center", fontsize=8,
+        for w, c, cnt, name in segs:
+            legend[name] = ax.barh(i, w * 100, left=left * 100, color=c, height=0.55, edgecolor="white", linewidth=2)
+            if w > 0.04:          # counts only inside the bars; the legend names the models
+                ax.text((left + w / 2) * 100, i, str(cnt), ha="center", va="center", fontsize=9,
                         color="white" if c != TIE_GREY else INK)
             left += w
-        ax.text(101, i, f"p = {fmt_p(r['p'])}", va="center", fontsize=9, color=MUTED)
+        p_txt = fmt_p(r["p"])
+        ax.text(101, i, f"p {p_txt}" if p_txt.startswith("<") else f"p = {p_txt}", va="center", fontsize=9,
+                color=MUTED)
+    tie_last = sorted(legend, key=lambda k: k.startswith("tie"))
+    ax.legend([legend[k] for k in tie_last], tie_last, loc="upper center", bbox_to_anchor=(0.5, -0.32),
+              ncol=min(4, len(legend)), frameon=False, fontsize=9)
     ax.set_yticks(range(len(rows)), [f"{label(r['x'])} vs {label(r['y'])}\n"
                                      f"({'forced' if r['forced'] else 'tie allowed'}, n={r['n']})" for r in rows])
     ax.invert_yaxis()
@@ -466,7 +471,7 @@ def section_judge(judge_files, md, metrics, out):
     ax.grid(axis="y", visible=False)
     fig.tight_layout()
     p = out / "fig_pairwise.png"
-    fig.savefig(p, dpi=200)
+    fig.savefig(p, dpi=200, bbox_inches="tight")
     plt.close(fig)
     return p
 

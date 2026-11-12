@@ -1,0 +1,60 @@
+{
+  "judge": "gemini-3.1-flash-lite",
+  "forced_choice": true,
+  "pairs": {
+    "sft_base_full:sft_kd_T2": {
+      "prompts_judged": 99,
+      "sft_base_full": 27,
+      "sft_kd_T2": 33,
+      "tie": 39,
+      "tie_breakdown": {
+        "equal_in_both_orders": 0,
+        "decisive_in_one_order_only": 0,
+        "order_flips": 39
+      },
+      "win_rate_excluding_ties": 0.55,
+      "leader": "sft_kd_T2",
+      "sign_test_p": 0.519,
+      "by_category": {
+        "brainstorming": {
+          "tie": 4,
+          "sft_base_full": 4,
+          "sft_kd_T2": 2
+        },
+        "classification": {
+          "tie": 11,
+          "sft_base_full": 3,
+          "sft_kd_T2": 6
+        },
+        "closed_qa": {
+          "sft_kd_T2": 2,
+          "tie": 2,
+          "sft_base_full": 1
+        },
+        "creative_writing": {
+          "sft_kd_T2": 2,
+          "sft_base_full": 1
+        },
+        "general_qa": {
+          "sft_base_full": 6,
+          "sft_kd_T2": 9,
+          "tie": 3
+        },
+        "information_extraction": {
+          "tie": 3,
+          "sft_base_full": 3,
+          "sft_kd_T2": 3
+        },
+        "open_qa": {
+          "tie": 15,
+          "sft_kd_T2": 9,
+          "sft_base_full": 7
+        },
+        "summarization": {
+          "sft_base_full": 2,
+          "tie": 1
+        }
+      }
+    }
+  }
+}

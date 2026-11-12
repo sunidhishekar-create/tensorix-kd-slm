@@ -1,0 +1,196 @@
+{
+  "created": "2026-11-11T19:53:13",
+  "run_mode": "full",
+  "run_name": "sft_dolly_kd_short_T2_v1",
+  "paths": {
+    "start_checkpoint": "/content/drive/MyDrive/tensorix/v2/checkpoints/kd_short_T2/best.pt",
+    "run_folder": "/content/drive/MyDrive/tensorix/v2/checkpoints/sft_dolly_kd_short_T2_v1",
+    "best": "/content/drive/MyDrive/tensorix/v2/checkpoints/sft_dolly_kd_short_T2_v1/best.pt",
+    "resumable": "/content/drive/MyDrive/tensorix/v2/checkpoints/sft_dolly_kd_short_T2_v1/ckpt.pt"
+  },
+  "baseline_unchanged": true,
+  "baseline_sha256": "155172fc797ef98e584c64babd29c35b5f381ffdfa2996d4c3b48039d27a43af",
+  "selected_checkpoint": {
+    "step": 300,
+    "val_response_loss": 3.300689790416937
+  },
+  "validation_response_loss": {
+    "baseline_full (orig, FULL)": 3.7424,
+    "sft_dolly_baseline_v3 (FULL, SFT)": 3.3473,
+    "baseline_short (orig, SHORT)": 4.1106,
+    "sft_dolly_baseline_short_v1 (SHORT, SFT)": 3.6863,
+    "kd_short_T2 (distilled, SHORT)": 3.6498,
+    "sft_dolly_kd_short_T2_v1 (distilled SHORT, SFT)": 3.3007
+  },
+  "validation_examples": 592,
+  "validation_tokens": 34018,
+  "training_config": {
+    "max_steps": 1350,
+    "micro_batch": 16,
+    "grad_accum": 2,
+    "lr": 0.0001,
+    "min_lr_ratio": 0.1,
+    "warmup_steps": 50,
+    "weight_decay": 0.01,
+    "grad_clip": 1.0,
+    "eval_every": 100,
+    "save_every": 100
+  },
+  "split": {
+    "rows_total": 15011,
+    "train_kept": 11145,
+    "val_kept": 592,
+    "train_used": 11145,
+    "val_used": 592,
+    "dropped": {
+      "too_long": 3274
+    },
+    "dropped_by_category": {
+      "closed_qa": 832,
+      "information_extraction": 895,
+      "summarization": 793,
+      "open_qa": 160,
+      "creative_writing": 227,
+      "general_qa": 247,
+      "brainstorming": 87,
+      "classification": 33
+    },
+    "val_fraction": 0.05,
+    "seed": 1337,
+    "max_length": 256,
+    "train_row_ids_sha256": "71dd8338f78cb9ce9f73252d8350bc5b347fa954517cab41d3fe6fd73505e47d",
+    "val_row_ids_sha256": "e46cfa5a7680adc1e3285835c6d08209f5f8515525f0e966e85efec3beff8540"
+  },
+  "generation": {
+    "temperature": 0.7,
+    "top_k": 40,
+    "seed": 1234,
+    "max_new_tokens": 120,
+    "stop_at_eos": true
+  },
+  "automatic_quality_checks": [
+    {
+      "model": "baseline_full (orig, FULL)",
+      "val_response_loss": 3.7424,
+      "ended_with_EOS": "1/18",
+      "empty": 0,
+      "no_eos": 17,
+      "repetitive": 17,
+      "template_leak": 0,
+      "malformed": 0,
+      "maybe_unrelated": 2,
+      "mean_new_tokens": 111.8
+    },
+    {
+      "model": "sft_dolly_baseline_v3 (FULL, SFT)",
+      "val_response_loss": 3.3473,
+      "ended_with_EOS": "17/18",
+      "empty": 0,
+      "no_eos": 1,
+      "repetitive": 4,
+      "template_leak": 0,
+      "malformed": 0,
+      "maybe_unrelated": 2,
+      "mean_new_tokens": 48.8
+    },
+    {
+      "model": "baseline_short (orig, SHORT)",
+      "val_response_loss": 4.1106,
+      "ended_with_EOS": "0/18",
+      "empty": 0,
+      "no_eos": 18,
+      "repetitive": 13,
+      "template_leak": 0,
+      "malformed": 0,
+      "maybe_unrelated": 8,
+      "mean_new_tokens": 115.4
+    },
+    {
+      "model": "sft_dolly_baseline_short_v1 (SHORT, SFT)",
+      "val_response_loss": 3.6863,
+      "ended_with_EOS": "15/18",
+      "empty": 0,
+      "no_eos": 3,
+      "repetitive": 6,
+      "template_leak": 0,
+      "malformed": 0,
+      "maybe_unrelated": 3,
+      "mean_new_tokens": 48.7
+    },
+    {
+      "model": "kd_short_T2 (distilled, SHORT)",
+      "val_response_loss": 3.6498,
+      "ended_with_EOS": "4/18",
+      "empty": 0,
+      "no_eos": 14,
+      "repetitive": 10,
+      "template_leak": 0,
+      "malformed": 0,
+      "maybe_unrelated": 6,
+      "mean_new_tokens": 103.6
+    },
+    {
+      "model": "sft_dolly_kd_short_T2_v1 (distilled SHORT, SFT)",
+      "val_response_loss": 3.3007,
+      "ended_with_EOS": "14/18",
+      "empty": 0,
+      "no_eos": 4,
+      "repetitive": 5,
+      "template_leak": 0,
+      "malformed": 0,
+      "maybe_unrelated": 4,
+      "mean_new_tokens": 46.1
+    }
+  ],
+  "observations_by_student": "(write 3-5 sentences after reading Section 12: are answers on topic? do they stop? are they correct?)",
+  "caveats": [
+    "Lower validation loss does not by itself prove better instruction following; read the generations.",
+    "Quality flags are heuristics.",
+    "kd_short_T2 and baseline_short are SHORT-tier (5,000 steps); baseline_full is FULL-tier (20,000 steps). Only same-tier pairs isolate the effect of distillation. The FULL-tier KD checkpoint (kd_full_T2) does not exist yet.",
+    "Dolly validation response loss is a different task from the fixed C4/TinyStories evaluation; never compare the two.",
+    "Single seed; differences of a few hundredths are within run-to-run noise."
+  ],
+  "sft_runs": [
+    {
+      "run": "sft_dolly_baseline_v3",
+      "updates_done": 1350,
+      "best_update": 300,
+      "best_val": 3.3473,
+      "final_val": 3.4733,
+      "overfit": true
+    },
+    {
+      "run": "sft_dolly_baseline_short_v1",
+      "updates_done": 1350,
+      "best_update": 700,
+      "best_val": 3.6863,
+      "final_val": 3.7592,
+      "overfit": true
+    },
+    {
+      "run": "sft_dolly_kd_short_T2_v1",
+      "updates_done": 1350,
+      "best_update": 300,
+      "best_val": 3.3007,
+      "final_val": 3.4586,
+      "overfit": true
+    }
+  ],
+  "reference_run": "sft_dolly_baseline_v3",
+  "experiment": "kd_short_T2",
+  "environment": {
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "transformers": "5.22.1",
+    "datasets": "4.8.5",
+    "numpy": "2.4.6",
+    "pandas": "2.2.3",
+    "cuda": "13.0",
+    "device": "cuda",
+    "gpu": "Tesla T4",
+    "amp_dtype": "torch.float16",
+    "grad_scaler": true,
+    "repo_commit": "8a92a56ce43b5c41516ac64fc07e23ccf9685247",
+    "model_py_sha256": "ba8c88f6306c469e246b48883f7806456df8db2f60edd2a35261f9d6f78dd31b"
+  }
+}

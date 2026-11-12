@@ -1,0 +1,28 @@
+{
+  "name": "kd_short_T4",
+  "device": "cuda",
+  "block_size": 256,
+  "limit": 0,
+  "scoring": "sum log p(choice | question); acc_norm divides by choice length in characters",
+  "kind": "student",
+  "source": "/content/drive/MyDrive/tensorix/v2/checkpoints/kd_short_T4/best.pt",
+  "step": 5000,
+  "tasks": {
+    "hellaswag": {
+      "n": 10042,
+      "acc": 0.2638,
+      "acc_stderr": 0.0044,
+      "acc_norm": 0.2626,
+      "acc_norm_stderr": 0.0044,
+      "chance": 0.25
+    },
+    "arc_easy": {
+      "n": 2376,
+      "acc": 0.3455,
+      "acc_stderr": 0.0098,
+      "acc_norm": 0.322,
+      "acc_norm_stderr": 0.0096,
+      "chance": 0.2502
+    }
+  }
+}

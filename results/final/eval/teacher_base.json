@@ -1,0 +1,18 @@
+{
+  "name": "teacher_base",
+  "device": "cuda",
+  "block_size": 256,
+  "eval_windows": 1024,
+  "gpu": "Tesla T4",
+  "kind": "hf_model",
+  "source": "HuggingFaceTB/SmolLM2-360M",
+  "params_m": 361.82,
+  "weights_fp16_mb": 723.6,
+  "val_c4_loss": 3.0466,
+  "val_c4_ppl": 21.043,
+  "val_ts_loss": 1.9067,
+  "val_ts_ppl": 6.731,
+  "val_avg_loss": 2.4767,
+  "latency_ms_1x256": 46.57,
+  "peak_mem_mb": 782.9
+}

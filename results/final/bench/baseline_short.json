@@ -1,0 +1,28 @@
+{
+  "name": "baseline_short",
+  "device": "cuda",
+  "block_size": 256,
+  "limit": 0,
+  "scoring": "sum log p(choice | question); acc_norm divides by choice length in characters",
+  "kind": "student",
+  "source": "/content/drive/MyDrive/tensorix/v2/checkpoints/baseline_short/best.pt",
+  "step": 5000,
+  "tasks": {
+    "hellaswag": {
+      "n": 10042,
+      "acc": 0.2633,
+      "acc_stderr": 0.0044,
+      "acc_norm": 0.2598,
+      "acc_norm_stderr": 0.0044,
+      "chance": 0.25
+    },
+    "arc_easy": {
+      "n": 2376,
+      "acc": 0.3013,
+      "acc_stderr": 0.0094,
+      "acc_norm": 0.3068,
+      "acc_norm_stderr": 0.0095,
+      "chance": 0.2502
+    }
+  }
+}

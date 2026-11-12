@@ -1,0 +1,19 @@
+{
+  "name": "baseline_short",
+  "device": "cuda",
+  "block_size": 256,
+  "eval_windows": 1024,
+  "gpu": "Tesla T4",
+  "kind": "student",
+  "source": "/content/drive/MyDrive/tensorix/v2/checkpoints/baseline_short/best.pt",
+  "step": 5000,
+  "params_m": 50.86,
+  "weights_fp16_mb": 101.7,
+  "val_c4_loss": 4.3964,
+  "val_c4_ppl": 81.156,
+  "val_ts_loss": 1.8342,
+  "val_ts_ppl": 6.26,
+  "val_avg_loss": 3.1153,
+  "latency_ms_1x256": 11.13,
+  "peak_mem_mb": 138.5
+}

@@ -40,7 +40,8 @@ Success is measured against a matched baseline (same model size, same tokens see
 - [x] Teacher (SmolLM2-360M) scored with `evaluate.py`
 - [x] SHORT-tier distillation runs (`kd_short_T2`, `kd_short_T4`) and Dolly instruction fine-tuning of `baseline_full`, `baseline_short` and `kd_short_T2`
 - [x] Final-evaluation pipeline written and tested on CPU (`notebooks/eval_final.ipynb`, see "Final evaluation" at the end)
-- [ ] Final evaluation run on a T4 (benchmarks, pairwise judging, figures) and results committed to `results/final/`
+- [x] Final evaluation run on a T4 (benchmarks, pairwise judging, figures) and results committed to `results/final/` (see "Final evaluation > Results" at the end)
+- [ ] Human check of the pairwise judge (blind sheet `results/final/judge/human_check.csv`), slides and demo video
 - [ ] Optional: custom-BPE tokenizer analysis (see Key design decisions)
 
 ## Results so far
@@ -426,8 +427,8 @@ Design choices:
 - **Matched comparisons only.** SHORT runs are compared with `baseline_short` and FULL runs with `baseline_full`. The main pairwise test compares SFT models whose only difference is the pretraining (`baseline_short` vs `kd_short_T2`, identical SFT data, split, template and settings).
 - **Held-out prompts** are a fixed random sample (seed 0) of the 592-example Dolly validation split used by all SFT runs. `make_dolly_eval.py` rebuilds that split with the SFT notebook's rules and stops unless it equals `sft_dolly_baseline_v3/split.json`.
 - **Same decoding for every model:** temperature 0.7, top-k 40, at most 120 new tokens, stop at EOS, and the same random seed per prompt.
-- **Judge:** `gemini-3.5-flash` (Gemini API, key in Colab Secrets as `GEMINI_API_KEY`), same protocol as the Gemma experiment. `gemma-4-26b-a4b-it` was tried first but returned HTTP 500 on every request. A model wins a prompt only if it is chosen in both orders. Neither compared model was trained on Gemini text, so self-preference does not favour one side.
-- **Missing checkpoint:** `sft_dolly_baseline_short_v1/best.pt` was no longer on Drive (only its logs were). It is retrained as `sft_dolly_baseline_short_v2` with the same notebook, data, split, settings and seed; its best validation loss should match the original 3.6863 closely, and the notebook uses it automatically when the original is missing.
+- **Judge:** `gemini-3.1-flash-lite` (Gemini API, key in Colab Secrets as `GEMINI_API_KEY`), forced choice (the judge must pick A or B), same protocol as the Gemma experiment. `gemma-4-26b-a4b-it` was tried first but returned HTTP 500 on every request, and `gemini-3.5-flash` allows only about 20 requests per day on the free tier. Each judgment row records its judge: all are from `gemini-3.1-flash-lite` except 22 judgments (11 prompts, both orders) in the main comparison, made by `gemini-3.5-flash` before the switch. Leaving those 11 prompts out does not change the conclusion (KD 120 vs 74, 61.9%, p = 0.001, instead of 127 vs 75). A model wins a prompt only if it is chosen in both orders. Neither compared model was trained on Gemini text, so self-preference does not favour one side.
+- **Missing checkpoint:** `sft_dolly_baseline_short_v1/best.pt` was no longer on Drive (only its logs were). It was retrained as `sft_dolly_baseline_short_v2` with the same notebook, data, split, settings and seed, and reproduced the original exactly: best validation response loss 3.6863 at update 700. The answers and judgments for "SFT on Baseline SHORT" come from `v2`; the SFT table below lists the original run's log, which is identical.
 
 ### Run it
 
@@ -442,4 +443,49 @@ Open `notebooks/eval_final.ipynb` in Colab on a T4 and run Cells 1 to 5 one at a
 
 ### Results
 
-Filled in from `results/final/RESULTS.md` after the T4 run. Numbers already measured by teammates are in the tables above (pretraining and KD) and in the Dolly SFT notebook (`sft_dolly_kd_short_T2_v1` best validation response loss 3.3007 vs 3.6863 for `sft_dolly_baseline_short_v1`).
+Measured on a Colab T4. Full tables, per-category judge counts and every raw file are in [`results/final/`](results/final/) ([`RESULTS.md`](results/final/RESULTS.md), [`final_metrics.json`](results/final/final_metrics.json)). Single training seed per configuration.
+
+**Main finding.** At the same 5,000 steps, distillation from SmolLM2-360M (T=2) lowers C4 perplexity by 24%, gives the best ARC-Easy score of all students, and after identical Dolly fine-tuning its answers are preferred by a blind judge in 63% of the decisive prompts (p < 0.001). Against a baseline trained 4x longer (20,000 steps), the KD student is close on C4 (61.6 vs 59.4), slightly ahead on ARC-Easy and Dolly validation loss, not significantly different in the judge comparison, but clearly behind on TinyStories (6.31 vs 5.05).
+
+**1. Language modelling** (fixed validation windows, lower is better; gap closed only on C4, see above)
+
+| Model | Steps | C4 ppl | vs tier baseline | TinyStories ppl | Gap closed on C4 |
+|---|---|---|---|---|---|
+| Baseline SHORT | 5,000 | 81.2 | reference | 6.26 | 0% |
+| KD SHORT T=2 | 5,000 | **61.6** | **-24.1%** | 6.31 | **20.4%** |
+| KD SHORT T=4 | 5,000 | 63.9 | -21.3% | 6.24 | 17.7% |
+| Baseline FULL | 20,000 | 59.4 | reference | 5.05 | - |
+| Teacher SmolLM2-360M | - | 21.0 | - | 6.73 | - |
+
+`evaluate.py` matched the last `log.csv` row of every run (Cell 3). The KD gain is entirely on C4; on TinyStories, where the teacher is worse than the students, KD neither helps nor hurts.
+
+**2. Zero-shot benchmarks** (acc_norm, %, +/- one standard error; chance is 25%)
+
+| Model | ARC-Easy (2,376) | HellaSwag (10,042) |
+|---|---|---|
+| Baseline SHORT | 30.7 +/- 0.9 | 26.0 +/- 0.4 |
+| KD SHORT T=2 | **33.5 +/- 1.0** | 26.3 +/- 0.4 |
+| KD SHORT T=4 | 32.2 +/- 1.0 | 26.3 +/- 0.4 |
+| Baseline FULL | 30.9 +/- 0.9 | 26.6 +/- 0.4 |
+| Teacher SmolLM2-360M | 69.4 +/- 0.9 | 56.4 +/- 0.5 |
+
+ARC-Easy: KD T=2 is 2.8 points above its matched baseline (about 2 standard errors of the difference) and above the 4x longer FULL baseline. HellaSwag: every student is within 1.6 points of chance, so it does not separate the students at this size and token budget.
+
+**3. Instruction fine-tuning** (Dolly validation, 592 examples, response-only loss, lower is better): SFT on KD SHORT T=2 **3.3007**, SFT on Baseline SHORT 3.6863, SFT on Baseline FULL 3.3473.
+
+**4. Blind pairwise preference** (300 held-out Dolly prompts, `gemini-3.1-flash-lite` with 22 early judgments by `gemini-3.5-flash` as noted above, both answer orders, a win only if chosen in both)
+
+| Pair | Prompts judged | Wins | Ties | KD win rate (excl. ties) | 95% interval | Sign-test p |
+|---|---|---|---|---|---|---|
+| SFT on KD SHORT T=2 vs SFT on Baseline SHORT | 298 | **KD 127** vs 75 | 96 | **62.9%** | 56% to 69% | **< 0.001** |
+| SFT on KD SHORT T=2 vs SFT on Baseline FULL | 99 | KD 33 vs 27 | 39 | 55.0% | 42% to 67% | 0.52 (not significant) |
+
+All ties are order flips (the judge picked a different answer when the order was swapped), so the both-orders rule matters. KD leads the matched comparison in all eight Dolly categories. Prompts the judge would not decide (it answered neither A nor B in an order) are left out: 2 in the main comparison, 1 in the second. The second comparison has only 60 decisive prompts and cannot detect a small difference: read it as "no evidence that the 4x longer baseline is better", not "equal". Answer statistics: KD answers are as long as the baseline's (36.8 vs 36.0 words) and slightly closer to the human reference (word F1 0.215 vs 0.201), but repeat a 3-gram more often (59.7% vs 52.0% of answers). A human check of 40 prompts (`judge/human_check.csv`; the key is kept off the repo) is still to do.
+
+**5. Efficiency** (fp16, 1 x 256 tokens, T4): the teacher has **7.1x** the parameters (361.8M vs 50.9M), needs **5.7x** the peak GPU memory (783 MB vs 138.5 MB) and is **4.2x** slower (46.6 ms vs 9.4 to 12.4 ms across the four students, which share one architecture; the spread is T4 noise).
+
+| | |
+|---|---|
+| ![C4 and TinyStories perplexity](results/final/fig_quality.png) | ![Validation perplexity curves](results/final/fig_val_ppl_curves.png) |
+| ![Zero-shot benchmarks](results/final/fig_benchmarks.png) | ![Blind pairwise preference](results/final/fig_pairwise.png) |
+| ![C4 gap closed](results/final/fig_gap_closed.png) | ![Student vs teacher efficiency](results/final/fig_efficiency.png) |
