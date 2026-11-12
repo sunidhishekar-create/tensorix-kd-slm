@@ -38,7 +38,9 @@ Success is measured against a matched baseline (same model size, same tokens see
 - [x] `src/evaluate.py` verified against `log.csv` (matches to four decimals for both baselines)
 - [x] Clean notebook `notebooks/baseline_train.ipynb` tested in Colab on a T4 (Cells 1 to 6; Cell 5 reproduced the `log.csv` losses)
 - [x] Teacher (SmolLM2-360M) scored with `evaluate.py`
-- [ ] Distillation runs, instruction fine-tuning, final evaluation (teammates)
+- [x] SHORT-tier distillation runs (`kd_short_T2`, `kd_short_T4`) and Dolly instruction fine-tuning of `baseline_full`, `baseline_short` and `kd_short_T2`
+- [x] Final-evaluation pipeline written and tested on CPU (`notebooks/eval_final.ipynb`, see "Final evaluation" at the end)
+- [ ] Final evaluation run on a T4 (benchmarks, pairwise judging, figures) and results committed to `results/final/`
 - [ ] Optional: custom-BPE tokenizer analysis (see Key design decisions)
 
 ## Results so far
@@ -89,8 +91,12 @@ src/
   model.py             decoder-only Transformer + load_checkpoint()
   train.py             resumable training loop (baseline now; KD plugs into the loss)
   evaluate.py          scores any student checkpoint or Hugging Face model on the fixed validation windows
+  bench_mc.py          zero-shot HellaSwag / ARC-Easy accuracy (lm-evaluation-harness scoring)
+  make_dolly_eval.py   held-out Dolly prompts, rebuilt from the SFT validation split
+  final_report.py      final tables (RESULTS.md, final_metrics.json) and figures from all result files
 notebooks/
   baseline_train.ipynb Colab notebook used for every run (setup, train, results, samples)
+  eval_final.ipynb     final evaluation: perplexity, efficiency, benchmarks, pairwise judging, figures
 configs/               settings files (empty so far)
 results/               plots and tables
 slides/                blank course PPT template
@@ -258,7 +264,7 @@ gap closed = (loss_baseline - loss_distilled) / (loss_baseline - loss_teacher)
 
 0 means distillation gave no gain over the baseline and 1 means the student matched the teacher. **Use it on C4 only:** on TinyStories the teacher's loss (1.907) is higher than the baseline's (1.619), so the denominator is negative and the number is meaningless. Report TinyStories as plain loss and perplexity. Also report the size, memory and latency ratios between student and teacher.
 
-- **Still to build (evaluation owner):** a blind pairwise comparison of baseline versus distilled responses on held-out prompts, and the final plots and tables in `results/`. The notebook's Cell 3 already plots validation curves from any list of runs.
+- **Blind pairwise comparison, benchmarks and final plots:** built in `notebooks/eval_final.ipynb`. See "Final evaluation" at the end of this README.
 - Run evaluation in its own session, not while a training run is using the GPU.
 
 ## Working on the code (VS Code)
@@ -399,3 +405,40 @@ The logs of baseline_short, kd_short_T2 and kd_short_T4 all contain 20 evaluatio
 - `src/distill.py`: Teacher loading, forward inference, and memory-efficient chunked autograd loss function.
 - `src/compare_runs.py`: Multi-run comparison table and log-scale perplexity plotting script.
 - `results/kd/`: Holds the three `log.csv` copies (`baseline_short_log.csv`, `kd_short_T2_log.csv`, `kd_short_T4_log.csv`), `best_step_check.txt`, `results_table.md`, `val_ppl_compare.png`, and the `evaluate.py` JSONs for `kd_short_T2` and `kd_short_T4`.
+
+## Final evaluation
+
+Owner: Diran Somanna (diran07). One notebook, `notebooks/eval_final.ipynb`, produces every number and figure for the report and the slides from the finished checkpoints on Drive. It writes to `tensorix/v2/results/final/` and builds `final_results.zip`, which is unzipped into `results/final/` in the repo.
+
+### What it measures
+
+| Question | Metric | Script | Models |
+|---|---|---|---|
+| Does KD lower perplexity at matched compute? | C4 and TinyStories loss/ppl on the fixed windows; % of the C4 student-teacher gap closed (same-tier baseline) | `src/evaluate.py` | every pretraining run + teacher |
+| Is the evaluation consistent with training? | `evaluate.py` loss vs the last row of `log.csv` (must agree to ~0.002) | notebook Cell 3 | every pretraining run |
+| What does the small model buy? | parameters, fp16 weights, peak GPU memory, latency of 1 x 256 tokens (fp16, T4), teacher/student ratios | `src/evaluate.py` | students + teacher |
+| Does KD help on standard benchmarks? | zero-shot HellaSwag (10,042) and ARC-Easy (2,376), acc and acc_norm with standard errors, lm-evaluation-harness scoring | `src/bench_mc.py` | every pretraining run + teacher |
+| Does KD give better instruction-following answers? | blind pairwise LLM judging on 300 held-out Dolly prompts, both answer orders, sign test and Wilson interval; answer statistics; blind sheet for a human check | `src/make_dolly_eval.py`, `experiments/gemma_sft/06_generate_eval.py`, `07_judge.py` | `sft_dolly_baseline_short_v1` vs `sft_dolly_kd_short_T2_v1` (main, same tier); `sft_dolly_baseline_v3` vs `sft_dolly_kd_short_T2_v1` (100 prompts) |
+| Everything in one place | `RESULTS.md`, `final_metrics.json`, `fig_*.png` | `src/final_report.py` | all of the above |
+
+Design choices:
+
+- **Matched comparisons only.** SHORT runs are compared with `baseline_short` and FULL runs with `baseline_full`. The main pairwise test compares SFT models whose only difference is the pretraining (`baseline_short` vs `kd_short_T2`, identical SFT data, split, template and settings).
+- **Held-out prompts** are a fixed random sample (seed 0) of the 592-example Dolly validation split used by all SFT runs. `make_dolly_eval.py` rebuilds that split with the SFT notebook's rules and stops unless it equals `sft_dolly_baseline_v3/split.json`.
+- **Same decoding for every model:** temperature 0.7, top-k 40, at most 120 new tokens, stop at EOS, and the same random seed per prompt.
+- **Judge:** `gemma-4-26b-a4b-it` (Gemini API, key in Colab Secrets as `GEMINI_API_KEY`), same protocol as the Gemma experiment. A model wins a prompt only if it is chosen in both orders. Neither compared model was trained on Gemma text, so self-preference does not favour one side.
+
+### Run it
+
+Open `notebooks/eval_final.ipynb` in Colab on a T4 and run Cells 1 to 5 one at a time (about 1 to 1.5 GPU hours in total, estimated). Cells 6 (judging, about 1 h per 300 prompts at 10 requests per minute) and 7 (report) need no GPU. Every cell skips outputs that already exist, so it resumes after a disconnect.
+
+### Checked so far (laptop, CPU)
+
+- `final_report.py` on the committed results (`results/kd/`) reproduces the README's C4 gap-closed values (20.4% for T=2, 17.7% for T=4) and draws the figures.
+- `make_dolly_eval.py` rebuilds exactly 592 validation rows, the same count as the SFT runs.
+- `bench_mc.py` gives chance-level accuracy (25%) for a randomly initialised student and, on a 100-example sample, 57% HellaSwag acc_norm for SmolLM2-360M (the published full-set value is about 54%), so the scoring works.
+- `06_generate_eval.py` and `07_judge.py` run end to end on the new prompt file.
+
+### Results
+
+Filled in from `results/final/RESULTS.md` after the T4 run. Numbers already measured by teammates are in the tables above (pretraining and KD) and in the Dolly SFT notebook (`sft_dolly_kd_short_T2_v1` best validation response loss 3.3007 vs 3.6863 for `sft_dolly_baseline_short_v1`).
