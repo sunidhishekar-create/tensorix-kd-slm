@@ -408,7 +408,7 @@ The logs of baseline_short, kd_short_T2 and kd_short_T4 all contain 20 evaluatio
 
 ## Final evaluation
 
-Owner: Diran Somanna (diran07). One notebook, `notebooks/eval_final.ipynb`, produces every number and figure for the report and the slides from the finished checkpoints on Drive. It writes to `tensorix/v2/results/final/` and builds `final_results.zip`, which is unzipped into `results/final/` in the repo.
+Owner: Diran Somanna (diran07). One notebook, `notebooks/eval_final.ipynb`, produces every number and figure for the report and the slides from the finished checkpoints on Drive. It reads checkpoints from the shared `tensorix/v2/` folder, writes to `MyDrive/tensorix_final_results/` in the runner's own Drive (writes into the shared folder silently disappeared without Editor access), and builds `final_results.zip`, which is unzipped into `results/final/` in the repo.
 
 ### What it measures
 
@@ -426,7 +426,8 @@ Design choices:
 - **Matched comparisons only.** SHORT runs are compared with `baseline_short` and FULL runs with `baseline_full`. The main pairwise test compares SFT models whose only difference is the pretraining (`baseline_short` vs `kd_short_T2`, identical SFT data, split, template and settings).
 - **Held-out prompts** are a fixed random sample (seed 0) of the 592-example Dolly validation split used by all SFT runs. `make_dolly_eval.py` rebuilds that split with the SFT notebook's rules and stops unless it equals `sft_dolly_baseline_v3/split.json`.
 - **Same decoding for every model:** temperature 0.7, top-k 40, at most 120 new tokens, stop at EOS, and the same random seed per prompt.
-- **Judge:** `gemma-4-26b-a4b-it` (Gemini API, key in Colab Secrets as `GEMINI_API_KEY`), same protocol as the Gemma experiment. A model wins a prompt only if it is chosen in both orders. Neither compared model was trained on Gemma text, so self-preference does not favour one side.
+- **Judge:** `gemini-3.5-flash` (Gemini API, key in Colab Secrets as `GEMINI_API_KEY`), same protocol as the Gemma experiment. `gemma-4-26b-a4b-it` was tried first but returned HTTP 500 on every request. A model wins a prompt only if it is chosen in both orders. Neither compared model was trained on Gemini text, so self-preference does not favour one side.
+- **Missing checkpoint:** `sft_dolly_baseline_short_v1/best.pt` was no longer on Drive (only its logs were). It is retrained as `sft_dolly_baseline_short_v2` with the same notebook, data, split, settings and seed; its best validation loss should match the original 3.6863 closely, and the notebook uses it automatically when the original is missing.
 
 ### Run it
 
