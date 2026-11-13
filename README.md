@@ -100,7 +100,7 @@ notebooks/
   eval_final.ipynb     final evaluation: perplexity, efficiency, benchmarks, pairwise judging, figures
 configs/               settings files (empty so far)
 results/               plots and tables
-slides/                blank course PPT template
+slides/                final presentation (TENSORIX_final.pptx, course template, with speaker notes)
 requirements.txt       Python packages (torch is not pinned; Colab ships its own)
 ```
 
@@ -304,7 +304,7 @@ It skips finished pieces on a rerun. Then copy `train.bin`, `val_c4.bin`, `val_t
 
 ## Final deliverables
 
-**PPT:** start from `slides/AFML-ppt-template.pptx`. A progress version covering the foundation work is kept on the shared Drive, so add the distillation and results slides to it. Suggested owners: architecture and tokenizer by Sunidhi, distillation by the distillation owner, fine-tuning and results by the fine-tuning owner, structure and polish by the evaluation owner.
+**PPT:** done, `slides/TENSORIX_final.pptx` (12 slides on the course template; every template section filled in, plus a second results slide). Speaker notes on each slide double as the video script. Still to add: team SRNs on slide 1.
 
 **5-minute demo video:** one screen recording with narration, about 30 seconds each for the problem, the model, baseline versus distilled results, a live generation from both models side by side, and the conclusions. Record last, once results exist.
 
